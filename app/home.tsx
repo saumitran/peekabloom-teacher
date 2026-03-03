@@ -22,8 +22,10 @@ import { supabase, type Child, type Observation } from "@/lib/supabase";
 type RecordingTab = "voice" | "photo";
 
 function ChildCard({ child, index }: { child: Child; index: number }) {
-  const initials =
-    (child.first_name?.[0] || "") + (child.last_name?.[0] || "");
+  const words = (child.name || "").trim().split(/\s+/);
+  const initials = words.length >= 2
+    ? (words[0][0] + words[words.length - 1][0]).toUpperCase()
+    : (words[0]?.[0] || "?").toUpperCase();
   const bgColors = [
     "#F97B6B",
     "#7BC4A0",
@@ -53,7 +55,7 @@ function ChildCard({ child, index }: { child: Child; index: number }) {
           <Text style={styles.childInitials}>{initials.toUpperCase()}</Text>
         </View>
         <Text style={styles.childName} numberOfLines={1}>
-          {child.first_name} {child.last_name?.[0]}.
+          {child.name}
         </Text>
       </Pressable>
     </Animated.View>
@@ -74,13 +76,14 @@ export default function HomeScreen() {
 
   const fetchData = useCallback(async () => {
     if (!classroomId) return;
+    console.log("[Peekabloom] classroom_id from SecureStore:", classroomId);
     try {
       const [childRes, obsRes] = await Promise.all([
         supabase
           .from("children")
           .select("*")
           .eq("classroom_id", classroomId)
-          .order("first_name"),
+          .order("name"),
         supabase
           .from("observations")
           .select("id", { count: "exact" })
@@ -88,10 +91,14 @@ export default function HomeScreen() {
           .eq("status", "pending"),
       ]);
 
+      console.log("[Peekabloom] children query result:", JSON.stringify(childRes, null, 2));
+      if (childRes.error) {
+        console.error("[Peekabloom] children query error:", childRes.error);
+      }
       if (childRes.data) setChildren(childRes.data);
       setPendingCount(obsRes.count || 0);
     } catch (e) {
-      console.error("Failed to fetch data:", e);
+      console.error("[Peekabloom] Failed to fetch data:", e);
     } finally {
       setLoading(false);
       setRefreshing(false);

@@ -14,8 +14,8 @@ export interface Classroom {
 export interface Child {
   id: string;
   classroom_id: string;
-  first_name: string;
-  last_name: string;
+  name: string;
+  created_at: string;
 }
 
 export interface Observation {

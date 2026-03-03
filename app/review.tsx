@@ -22,8 +22,7 @@ import { supabase, type Observation } from "@/lib/supabase";
 
 interface ObservationWithChild extends Observation {
   children?: {
-    first_name: string;
-    last_name: string;
+    name: string;
   };
 }
 
@@ -39,9 +38,7 @@ function ObservationCard({
   onDelete: (id: string) => void;
 }) {
   const [text, setText] = useState(obs.observation_text);
-  const childName = obs.children
-    ? `${obs.children.first_name} ${obs.children.last_name?.[0] || ""}.`
-    : "Unknown";
+  const childName = obs.children?.name || "Unknown";
 
   const handleBlur = () => {
     if (text !== obs.observation_text) {
@@ -125,7 +122,7 @@ export default function ReviewScreen() {
     try {
       const { data } = await supabase
         .from("observations")
-        .select("*, children(first_name, last_name)")
+        .select("*, children(name)")
         .eq("classroom_id", classroomId)
         .eq("status", "pending")
         .order("created_at", { ascending: false });
