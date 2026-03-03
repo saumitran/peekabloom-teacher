@@ -1,0 +1,65 @@
+Build an Expo React Native iPad app for daycare teachers to record voice observations about children.
+
+ENVIRONMENT VARIABLES NEEDED:
+- EXPO_PUBLIC_SUPABASE_URL
+- EXPO_PUBLIC_SUPABASE_ANON_KEY
+- EXPO_PUBLIC_PARSING_API_URL (the /parse endpoint URL)
+- EXPO_PUBLIC_PARSING_API_KEY (the Bearer token for the parsing API)
+
+PACKAGES NEEDED:
+- @supabase/supabase-js
+- expo-av (audio recording)
+- expo-speech-recognition (live transcription)
+- expo-camera (photo capture)
+- expo-image-manipulator (photo compression)
+- expo-secure-store (save classroom ID on device)
+- expo-router (navigation)
+
+SCREENS:
+- / (activation screen)
+- /home (main teaching screen)
+- /review (review pending observations)
+
+BRAND GUIDELINES:
+Colors:
+- Background: #1A1A2E (deep navy — teachers need dark UI in bright classrooms)
+- Surface: #2D2D44 (elevated surface)
+- Primary: #F97B6B (coral)
+- Accent: #7BC4A0 (sage green)
+- Text primary: #FFFFFF
+- Text muted: #A0A0B8
+
+Fonts: Nunito throughout — bold for headings, regular for body
+
+UI: rounded-2xl everywhere, generous padding, large tap targets (minimum 48px height), optimized for iPad landscape
+
+ACTIVATION SCREEN (/):
+- "🌸 Peekabloom" centered in Nunito bold, coral color
+- Subtitle: "Enter your classroom code"
+- Large text input — auto-capitalize, easy to type on iPad
+- "Activate" button in coral
+- On submit: look up classroom by activation_code in Supabase classrooms table
+- If invalid: show "Invalid code. Check with your director."
+- If valid: save classroom_id and classroom_name to SecureStore, navigate to /home
+
+HOME SCREEN (/home):
+- Header: classroom name on left, "Review (n)" button on right showing count of pending observations
+- Children grid: load all children for this classroom from Supabase, show as a grid of name cards
+- Bottom recording bar with two tabs: "Voice" (default) and "Photo"
+- Voice tab: one large record button centered, labeled "Hold to Record"
+- Photo tab: one large camera button centered
+- Buttons are big and easy to press
+- On load: if no classroom_id in SecureStore, redirect to activation screen
+
+REVIEW SCREEN (/review):
+- Back button to /home
+- List of all pending observations for this classroom (status = 'pending')
+- Each card: child name, observation text (editable inline), delete button
+- "Approve All" button in header — sets all shown observations to status = 'approved', returns to /home
+- Empty state: "Nothing to review yet 🌱" with back button
+
+Do not implement recording or camera functionality yet — just build the layout, navigation, and data loading.
+
+Create a GitHub repository called peekabloom-teacher and push to it.
+
+Commit: "Teacher app foundation"
