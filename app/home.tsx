@@ -367,6 +367,10 @@ function PhotoRecorder({
             ExpoSpeechRecognitionModule.start({ lang: "en-US", continuous: true, interimResults: true });
           }
         }
+        if (recordingRef.current) {
+          try { await recordingRef.current.stopAndUnloadAsync(); } catch (e) {}
+          recordingRef.current = null;
+        }
         await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
         const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
         recordingRef.current = recording;
@@ -426,13 +430,12 @@ function PhotoRecorder({
         .from("photos")
         .upload(path, photoBlob, { contentType: "image/jpeg" });
 
+      let publicUrl: string | null = null;
       if (uploadError) {
-        console.error("[Peekabloom] Photo upload error:", uploadError);
-        setPhotoState("error");
-        return;
+        console.error("[Peekabloom] Storage upload failed — check Supabase photos bucket RLS policy", uploadError);
+      } else {
+        publicUrl = supabase.storage.from("photos").getPublicUrl(path).data.publicUrl;
       }
-
-      const { data: { publicUrl } } = supabase.storage.from("photos").getPublicUrl(path);
 
       // Call parsing API
       const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
