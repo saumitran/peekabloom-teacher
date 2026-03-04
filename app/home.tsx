@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   StyleSheet,
   Text,
@@ -15,11 +15,17 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
+import { Audio } from "expo-av";
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from "@/lib/speechRecognition";
 import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
 import { supabase, type Child } from "@/lib/supabase";
 
 type RecordingTab = "voice" | "photo";
+type UiState = "idle" | "recording" | "parsing" | "saved" | "error";
 
 function ChildCard({ child, index }: { child: Child; index: number }) {
   const words = (child.name || "").trim().split(/\s+/);
@@ -55,26 +61,228 @@ function ChildCard({ child, index }: { child: Child; index: number }) {
   );
 }
 
-function VoiceRecorder() {
+function VoiceRecorder({
+  classChildren,
+  classroomId,
+  onSaved,
+}: {
+  classChildren: Child[];
+  classroomId: string;
+  onSaved: () => void;
+}) {
+  "use no memo";
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [uiState, setUiState] = useState<UiState>("idle");
+
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const transcriptRef = useRef("");
+
+  useSpeechRecognitionEvent("result", (event) => {
+    const text = event.results?.[0]?.transcript ?? "";
+    transcriptRef.current = text;
+    setTranscript(text);
+  });
+
+  const handlePressIn = async () => {
+    if (uiState !== "idle") return;
+    try {
+      if (Platform.OS !== "web") {
+        const micPerm = await Audio.requestPermissionsAsync();
+        if (!micPerm.granted) {
+          setUiState("error");
+          return;
+        }
+        const speechPerm =
+          await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (!speechPerm.granted) {
+          setUiState("error");
+          return;
+        }
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+        });
+        ExpoSpeechRecognitionModule.start({
+          lang: "en-US",
+          continuous: true,
+          interimResults: true,
+        });
+        const { recording } = await Audio.Recording.createAsync(
+          Audio.RecordingOptionsPresets.HIGH_QUALITY,
+        );
+        recordingRef.current = recording;
+      }
+      transcriptRef.current = "";
+      setTranscript("");
+      setIsRecording(true);
+      setUiState("recording");
+    } catch (e) {
+      console.error("[Peekabloom] Start recording error:", e);
+      setUiState("error");
+    }
+  };
+
+  const handlePressOut = async () => {
+    if (uiState !== "recording") return;
+    try {
+      if (Platform.OS !== "web") {
+        ExpoSpeechRecognitionModule.stop();
+        if (recordingRef.current) {
+          await recordingRef.current.stopAndUnloadAsync();
+          recordingRef.current = null;
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      }
+      setIsRecording(false);
+      setUiState("parsing");
+      await parseAndSave(transcriptRef.current.trim());
+    } catch (e) {
+      console.error("[Peekabloom] Stop recording error:", e);
+      setIsRecording(false);
+      setUiState("error");
+    }
+  };
+
+  const parseAndSave = async (finalTranscript: string) => {
+    const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
+    const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
+
+    if (!finalTranscript) {
+      setUiState("error");
+      return;
+    }
+
+    try {
+      const response = await fetch(parseUrl!, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${parseKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transcript: finalTranscript,
+          children: classChildren,
+          classroom_id: classroomId,
+          photo_url: null,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error("[Peekabloom] Parse API error:", response.status);
+        setUiState("error");
+        return;
+      }
+
+      const data = await response.json();
+      const observations = data.observations ?? [];
+
+      if (observations.length === 0) {
+        setUiState("error");
+        return;
+      }
+
+      const rows = observations.map((obs: {
+        child_id: string;
+        classroom_id: string;
+        parsed_content: string;
+        hdlh_tags: unknown;
+        elect_tags: unknown;
+        photo_url: string | null;
+        status: string;
+      }) => ({
+        child_id: obs.child_id,
+        classroom_id: obs.classroom_id,
+        raw_transcript: finalTranscript,
+        parsed_content: obs.parsed_content,
+        hdlh_tags: obs.hdlh_tags,
+        elect_tags: obs.elect_tags,
+        photo_url: obs.photo_url ?? null,
+        status: obs.status ?? "pending",
+      }));
+
+      const { error: saveError } = await supabase
+        .from("observations")
+        .insert(rows);
+
+      if (saveError) {
+        console.error("[Peekabloom] Supabase save error:", saveError);
+        setUiState("error");
+        return;
+      }
+
+      setUiState("saved");
+      setTranscript("");
+      transcriptRef.current = "";
+      onSaved();
+      setTimeout(() => setUiState("idle"), 2000);
+    } catch (e) {
+      console.error("[Peekabloom] parseAndSave error:", e);
+      setUiState("error");
+    }
+  };
+
+  const btnColor =
+    uiState === "recording"
+      ? "#D96A5C"
+      : uiState === "parsing"
+        ? Colors.textMuted
+        : uiState === "saved"
+          ? Colors.accent
+          : uiState === "error"
+            ? Colors.error
+            : Colors.primary;
+
+  const hintText =
+    uiState === "recording"
+      ? "Recording..."
+      : uiState === "parsing"
+        ? "Parsing..."
+        : uiState === "saved"
+          ? "Saved"
+          : uiState === "error"
+            ? "Try Again"
+            : "Hold to Record";
+
   return (
     <View style={styles.recordArea}>
+      {uiState === "recording" && transcript ? (
+        <Text style={styles.transcriptText} numberOfLines={4}>
+          {transcript}
+        </Text>
+      ) : null}
+
       <TouchableOpacity
-        style={styles.recordBtn}
-        activeOpacity={0.8}
-        onPress={() => {
-          console.log("[Peekabloom] Record button pressed");
-        }}
+        style={[styles.recordBtn, { backgroundColor: btnColor }]}
+        activeOpacity={0.85}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        disabled={uiState === "parsing" || uiState === "saved"}
+        onPress={uiState === "error" ? () => setUiState("idle") : undefined}
       >
-        <Ionicons name="mic" size={32} color="#FFFFFF" />
+        {uiState === "parsing" ? (
+          <ActivityIndicator color="#FFFFFF" size="large" />
+        ) : uiState === "saved" ? (
+          <Ionicons name="checkmark" size={36} color="#FFFFFF" />
+        ) : (
+          <Ionicons name="mic" size={32} color="#FFFFFF" />
+        )}
       </TouchableOpacity>
-      <Text style={styles.recordHint}>Hold to Record</Text>
+
+      <Text style={[styles.recordHint, uiState === "error" && styles.hintError]}>
+        {hintText}
+      </Text>
     </View>
   );
 }
 
 export default function HomeScreen() {
-  const { classroomId, classroomName, isLoading: classroomLoading, clearClassroom } =
-    useClassroom();
+  const {
+    classroomId,
+    classroomName,
+    isLoading: classroomLoading,
+    clearClassroom,
+  } = useClassroom();
   const insets = useSafeAreaInsets();
   const [children, setChildren] = useState<Child[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -118,6 +326,10 @@ export default function HomeScreen() {
     }
     fetchData();
   }, [classroomId, classroomLoading, fetchData]);
+
+  const handleObservationSaved = useCallback(() => {
+    setPendingCount((n) => n + 1);
+  }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -267,11 +479,15 @@ export default function HomeScreen() {
             </View>
 
             {activeTab === "voice" ? (
-              <VoiceRecorder />
+              <VoiceRecorder
+                classChildren={children}
+                classroomId={classroomId!}
+                onSaved={handleObservationSaved}
+              />
             ) : (
               <View style={styles.recordArea}>
                 <TouchableOpacity
-                  style={styles.cameraBtn}
+                  style={[styles.recordBtn, { backgroundColor: Colors.accent }]}
                   activeOpacity={0.8}
                   onPress={() => {
                     if (Platform.OS !== "web") {
@@ -470,19 +686,18 @@ const styles = StyleSheet.create({
     gap: 16,
     paddingBottom: 8,
   },
+  transcriptText: {
+    fontSize: 13,
+    fontFamily: "Nunito_400Regular",
+    color: Colors.textMuted,
+    textAlign: "center",
+    lineHeight: 19,
+    paddingHorizontal: 8,
+  },
   recordBtn: {
     width: 88,
     height: 88,
     borderRadius: 44,
-    backgroundColor: Colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cameraBtn: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: Colors.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -490,5 +705,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: "Nunito_600SemiBold",
     color: Colors.textMuted,
+  },
+  hintError: {
+    color: Colors.error,
   },
 });
