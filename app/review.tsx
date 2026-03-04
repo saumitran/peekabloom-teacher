@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import {
   StyleSheet,
   Text,
   View,
   Pressable,
   FlatList,
-  TextInput,
   ActivityIndicator,
   Platform,
   Alert,
@@ -29,22 +28,13 @@ interface ObservationWithChild extends Observation {
 function ObservationCard({
   obs,
   index,
-  onUpdate,
   onDelete,
 }: {
   obs: ObservationWithChild;
   index: number;
-  onUpdate: (id: string, text: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const [text, setText] = useState(obs.observation_text);
   const childName = obs.children?.name || "Unknown";
-
-  const handleBlur = () => {
-    if (text !== obs.observation_text) {
-      onUpdate(obs.id, text);
-    }
-  };
 
   const confirmDelete = () => {
     if (Platform.OS === "web") {
@@ -84,16 +74,7 @@ function ObservationCard({
             <Ionicons name="trash-outline" size={20} color={Colors.error} />
           </Pressable>
         </View>
-        <TextInput
-          style={styles.obsTextInput}
-          value={text}
-          onChangeText={setText}
-          onBlur={handleBlur}
-          multiline
-          textAlignVertical="top"
-          placeholderTextColor={Colors.textDark}
-          placeholder="Observation text..."
-        />
+        <Text style={styles.obsText}>{obs.parsed_content}</Text>
         <Text style={styles.obsDate}>
           {new Date(obs.created_at).toLocaleDateString(undefined, {
             month: "short",
@@ -139,13 +120,6 @@ export default function ReviewScreen() {
     fetchObservations();
   }, [fetchObservations]);
 
-  const handleUpdate = async (id: string, text: string) => {
-    await supabase
-      .from("observations")
-      .update({ observation_text: text })
-      .eq("id", id);
-  };
-
   const handleDelete = async (id: string) => {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -179,7 +153,6 @@ export default function ReviewScreen() {
     <ObservationCard
       obs={item}
       index={index}
-      onUpdate={handleUpdate}
       onDelete={handleDelete}
     />
   );
@@ -371,14 +344,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  obsTextInput: {
-    backgroundColor: Colors.background,
-    borderRadius: 12,
-    padding: 14,
+  obsText: {
     fontSize: 15,
     fontFamily: "Nunito_400Regular",
     color: Colors.text,
-    minHeight: 72,
+    lineHeight: 22,
   },
   obsDate: {
     fontSize: 12,

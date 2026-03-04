@@ -9,7 +9,7 @@ import {
   Platform,
   RefreshControl,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -324,6 +324,16 @@ export default function HomeScreen() {
     }
   }, [classroomId]);
 
+  const fetchPendingCount = useCallback(async () => {
+    if (!classroomId) return;
+    const { count } = await supabase
+      .from("observations")
+      .select("id", { count: "exact" })
+      .eq("classroom_id", classroomId)
+      .eq("status", "pending");
+    setPendingCount(count || 0);
+  }, [classroomId]);
+
   useEffect(() => {
     if (!classroomLoading && !classroomId) {
       router.replace("/");
@@ -331,6 +341,12 @@ export default function HomeScreen() {
     }
     fetchData();
   }, [classroomId, classroomLoading, fetchData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchPendingCount();
+    }, [fetchPendingCount])
+  );
 
   const handleObservationSaved = useCallback(() => {
     setPendingCount((n) => n + 1);

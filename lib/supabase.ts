@@ -23,6 +23,7 @@ export interface Observation {
   child_id: string;
   classroom_id: string;
   observation_text: string;
+  parsed_content: string;
   status: "pending" | "approved" | "rejected";
   created_at: string;
 }
