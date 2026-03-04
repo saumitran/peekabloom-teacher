@@ -391,7 +391,7 @@ function PhotoRecorder({
     try {
       // Upload photo to Supabase storage
       const response = await fetch(photoUri);
-      const blob = await response.blob();
+      const photoBlob = await response.blob();
       const path = `photos/${Date.now()}.jpg`;
 
       const { error: uploadError } = await supabase.storage
