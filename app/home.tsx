@@ -305,7 +305,6 @@ function PhotoRecorder({
 
   const cameraRef = useRef<CameraView>(null);
   const transcriptRef = useRef("");
-  const recordingRef = useRef<Audio.Recording | null>(null);
 
   useSpeechRecognitionEvent("result", (event) => {
     if (isRecording) {
@@ -357,22 +356,11 @@ function PhotoRecorder({
   const handlePressIn = async () => {
     if (photoState !== "describing") return;
     try {
-      if (Platform.OS !== "web") {
-        const micPerm = await Audio.requestPermissionsAsync();
-        if (!micPerm.granted) { setPhotoState("error"); return; }
-        if (speechRecognitionAvailable) {
-          const speechPerm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-          if (speechPerm.granted) {
-            ExpoSpeechRecognitionModule.start({ lang: "en-US", continuous: true, interimResults: true });
-          }
+      if (Platform.OS !== "web" && speechRecognitionAvailable) {
+        const speechPerm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (speechPerm.granted) {
+          ExpoSpeechRecognitionModule.start({ lang: "en-US", continuous: true, interimResults: true });
         }
-        if (recordingRef.current) {
-          try { await recordingRef.current.stopAndUnloadAsync(); } catch (e) {}
-          recordingRef.current = null;
-        }
-        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-        const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-        recordingRef.current = recording;
       }
       transcriptRef.current = "";
       setTranscript("");
@@ -386,13 +374,8 @@ function PhotoRecorder({
   const handlePressOut = async () => {
     if (!isRecording) return;
     try {
-      if (Platform.OS !== "web") {
-        if (speechRecognitionAvailable) ExpoSpeechRecognitionModule.stop();
-        if (recordingRef.current) {
-          await recordingRef.current.stopAndUnloadAsync();
-          recordingRef.current = null;
-        }
-        await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      if (Platform.OS !== "web" && speechRecognitionAvailable) {
+        ExpoSpeechRecognitionModule.stop();
       }
       setIsRecording(false);
       setPhotoState("parsing");
