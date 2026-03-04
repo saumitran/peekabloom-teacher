@@ -15,7 +15,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.peekabloom.teacher"
+      "bundleIdentifier": "com.peekabloom.teacher",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Peekabloom records audio to capture voice observations about children.",
+        "NSSpeechRecognitionUsageDescription": "Peekabloom uses speech recognition to transcribe observations in real time."
+      }
     },
     "android": {
       "package": "com.peekabloom.teacher",
@@ -36,7 +40,20 @@
       ],
       "expo-font",
       "expo-web-browser",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Peekabloom records audio to capture voice observations about children."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Peekabloom records audio to capture voice observations about children.",
+          "speechRecognitionPermission": "Peekabloom uses speech recognition to transcribe observations in real time."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
