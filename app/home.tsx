@@ -19,6 +19,7 @@ import { Audio } from "expo-av";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
+  speechRecognitionAvailable,
 } from "@/lib/speechRecognition";
 import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
@@ -93,20 +94,22 @@ function VoiceRecorder({
           setUiState("error");
           return;
         }
-        const speechPerm =
-          await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        if (!speechPerm.granted) {
-          setUiState("error");
-          return;
+        if (speechRecognitionAvailable) {
+          const speechPerm =
+            await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+          if (!speechPerm.granted) {
+            setUiState("error");
+            return;
+          }
+          ExpoSpeechRecognitionModule.start({
+            lang: "en-US",
+            continuous: true,
+            interimResults: true,
+          });
         }
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: true,
           playsInSilentModeIOS: true,
-        });
-        ExpoSpeechRecognitionModule.start({
-          lang: "en-US",
-          continuous: true,
-          interimResults: true,
         });
         const { recording } = await Audio.Recording.createAsync(
           Audio.RecordingOptionsPresets.HIGH_QUALITY,
@@ -127,7 +130,9 @@ function VoiceRecorder({
     if (uiState !== "recording") return;
     try {
       if (Platform.OS !== "web") {
-        ExpoSpeechRecognitionModule.stop();
+        if (speechRecognitionAvailable) {
+          ExpoSpeechRecognitionModule.stop();
+        }
         if (recordingRef.current) {
           await recordingRef.current.stopAndUnloadAsync();
           recordingRef.current = null;
