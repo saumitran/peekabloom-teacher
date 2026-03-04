@@ -8,6 +8,9 @@ import {
   ActivityIndicator,
   Platform,
   RefreshControl,
+  Modal,
+  Alert,
+  Image,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,6 +19,8 @@ import { Ionicons } from "@expo/vector-icons";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { Audio } from "expo-av";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -281,6 +286,344 @@ function VoiceRecorder({
   );
 }
 
+type PhotoState = "idle" | "camera" | "preview" | "describing" | "parsing" | "saved" | "error";
+
+function PhotoRecorder({
+  classChildren,
+  classroomId,
+  onSaved,
+}: {
+  classChildren: Child[];
+  classroomId: string;
+  onSaved: () => void;
+}) {
+  "use no memo";
+  const [permission, requestPermission] = useCameraPermissions();
+  const [photoState, setPhotoState] = useState<PhotoState>("idle");
+  const [capturedUri, setCapturedUri] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+
+  const cameraRef = useRef<CameraView>(null);
+  const transcriptRef = useRef("");
+  const recordingRef = useRef<Audio.Recording | null>(null);
+
+  useSpeechRecognitionEvent("result", (event) => {
+    if (isRecording) {
+      const text = event.results?.[0]?.transcript ?? "";
+      transcriptRef.current = text;
+      setTranscript(text);
+    }
+  });
+
+  const openCamera = async () => {
+    if (!permission?.granted) {
+      const { granted } = await requestPermission();
+      if (!granted) {
+        Alert.alert(
+          "Camera Permission Required",
+          "Peekabloom needs camera access to capture photos of children's activities.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+    }
+    setPhotoState("camera");
+  };
+
+  const takePicture = async () => {
+    if (!cameraRef.current) return;
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 1 });
+      if (photo) {
+        setCapturedUri(photo.uri);
+        setPhotoState("preview");
+      }
+    } catch (e) {
+      console.error("[Peekabloom] takePicture error:", e);
+    }
+  };
+
+  const handleRetake = () => {
+    setCapturedUri(null);
+    setPhotoState("camera");
+  };
+
+  const handleUsePhoto = () => {
+    transcriptRef.current = "";
+    setTranscript("");
+    setPhotoState("describing");
+  };
+
+  const handlePressIn = async () => {
+    if (photoState !== "describing") return;
+    try {
+      if (Platform.OS !== "web") {
+        const micPerm = await Audio.requestPermissionsAsync();
+        if (!micPerm.granted) { setPhotoState("error"); return; }
+        if (speechRecognitionAvailable) {
+          const speechPerm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+          if (speechPerm.granted) {
+            ExpoSpeechRecognitionModule.start({ lang: "en-US", continuous: true, interimResults: true });
+          }
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+        const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+        recordingRef.current = recording;
+      }
+      transcriptRef.current = "";
+      setTranscript("");
+      setIsRecording(true);
+    } catch (e) {
+      console.error("[Peekabloom] Photo record start error:", e);
+      setPhotoState("error");
+    }
+  };
+
+  const handlePressOut = async () => {
+    if (!isRecording) return;
+    try {
+      if (Platform.OS !== "web") {
+        if (speechRecognitionAvailable) ExpoSpeechRecognitionModule.stop();
+        if (recordingRef.current) {
+          await recordingRef.current.stopAndUnloadAsync();
+          recordingRef.current = null;
+        }
+        await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
+      }
+      setIsRecording(false);
+      setPhotoState("parsing");
+      await processAndSave(transcriptRef.current.trim(), capturedUri!);
+    } catch (e) {
+      console.error("[Peekabloom] Photo record stop error:", e);
+      setIsRecording(false);
+      setPhotoState("error");
+    }
+  };
+
+  const processAndSave = async (finalTranscript: string, photoUri: string) => {
+    try {
+      // Compress photo
+      let result = await manipulateAsync(
+        photoUri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.5, format: SaveFormat.JPEG }
+      );
+
+      // Check size and reduce quality further if over 100KB
+      const sizeCheck = await fetch(result.uri);
+      const sizeBlob = await sizeCheck.blob();
+      if (sizeBlob.size > 100 * 1024) {
+        result = await manipulateAsync(result.uri, [], { compress: 0.3, format: SaveFormat.JPEG });
+      }
+
+      // Upload to Supabase storage
+      const uploadResp = await fetch(result.uri);
+      const photoBlob = await uploadResp.blob();
+      const path = `${classroomId}/${Date.now()}.jpg`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("photos")
+        .upload(path, photoBlob, { contentType: "image/jpeg" });
+
+      if (uploadError) {
+        console.error("[Peekabloom] Photo upload error:", uploadError);
+        setPhotoState("error");
+        return;
+      }
+
+      const { data: { publicUrl } } = supabase.storage.from("photos").getPublicUrl(path);
+
+      // Call parsing API
+      const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
+      const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
+      let observations: {
+        child_id: string;
+        classroom_id: string;
+        parsed_content: string;
+        hdlh_tags: unknown;
+        elect_tags: unknown;
+        photo_url: string | null;
+        status: string;
+      }[] = [];
+
+      if (finalTranscript) {
+        try {
+          const response = await fetch(parseUrl!, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${parseKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              transcript: finalTranscript,
+              children: classChildren,
+              classroom_id: classroomId,
+              photo_url: publicUrl,
+            }),
+          });
+          if (response.ok) {
+            const data = await response.json();
+            observations = data.observations ?? [];
+          }
+        } catch (e) {
+          console.error("[Peekabloom] Parse API error:", e);
+        }
+      }
+
+      let rows;
+      if (observations.length > 0) {
+        rows = observations.map((obs) => ({
+          child_id: obs.child_id,
+          classroom_id: obs.classroom_id,
+          raw_transcript: finalTranscript,
+          parsed_content: obs.parsed_content,
+          hdlh_tags: obs.hdlh_tags,
+          elect_tags: obs.elect_tags,
+          photo_url: publicUrl,
+          status: obs.status ?? "pending",
+        }));
+      } else {
+        // No children mentioned or empty transcript — one observation per child
+        const parsedContent = finalTranscript || "📸 Photo update";
+        rows = classChildren.map((child) => ({
+          child_id: child.id,
+          classroom_id: classroomId,
+          raw_transcript: finalTranscript,
+          parsed_content: parsedContent,
+          hdlh_tags: [],
+          elect_tags: [],
+          photo_url: publicUrl,
+          status: "pending",
+        }));
+      }
+
+      const { error: saveError } = await supabase.from("observations").insert(rows);
+      if (saveError) {
+        console.error("[Peekabloom] Save error:", saveError);
+        setPhotoState("error");
+        return;
+      }
+
+      setPhotoState("saved");
+      onSaved();
+      setTimeout(() => {
+        setPhotoState("idle");
+        setCapturedUri(null);
+        setTranscript("");
+        transcriptRef.current = "";
+      }, 2000);
+    } catch (e) {
+      console.error("[Peekabloom] processAndSave error:", e);
+      setPhotoState("error");
+    }
+  };
+
+  // Camera / preview modal
+  const showModal = photoState === "camera" || photoState === "preview";
+
+  // Describing / processing states share the hold-to-record UI
+  const inRecordingFlow =
+    photoState === "describing" ||
+    photoState === "parsing" ||
+    photoState === "saved" ||
+    photoState === "error";
+
+  if (inRecordingFlow) {
+    const btnColor = isRecording
+      ? "#D96A5C"
+      : photoState === "parsing"
+        ? Colors.textMuted
+        : photoState === "saved"
+          ? Colors.accent
+          : photoState === "error"
+            ? Colors.error
+            : Colors.primary;
+
+    const hintText = isRecording
+      ? "Recording..."
+      : photoState === "parsing"
+        ? "Processing..."
+        : photoState === "saved"
+          ? "Saved"
+          : photoState === "error"
+            ? "Try Again"
+            : "Describe this photo...";
+
+    return (
+      <View style={styles.recordArea}>
+        {isRecording && transcript ? (
+          <Text style={styles.transcriptText} numberOfLines={4}>{transcript}</Text>
+        ) : null}
+        <TouchableOpacity
+          style={[styles.recordBtn, { backgroundColor: btnColor }]}
+          activeOpacity={0.85}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          disabled={photoState === "parsing" || photoState === "saved"}
+          onPress={photoState === "error" ? () => setPhotoState("describing") : undefined}
+        >
+          {photoState === "parsing" ? (
+            <ActivityIndicator color="#FFFFFF" size="large" />
+          ) : photoState === "saved" ? (
+            <Ionicons name="checkmark" size={36} color="#FFFFFF" />
+          ) : (
+            <Ionicons name="mic" size={32} color="#FFFFFF" />
+          )}
+        </TouchableOpacity>
+        <Text style={[styles.recordHint, photoState === "error" && styles.hintError]}>
+          {hintText}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <View style={styles.recordArea}>
+        <TouchableOpacity
+          style={[styles.recordBtn, { backgroundColor: Colors.accent }]}
+          activeOpacity={0.8}
+          onPress={openCamera}
+          disabled={showModal}
+        >
+          <Ionicons name="camera" size={32} color="#FFFFFF" />
+        </TouchableOpacity>
+        <Text style={styles.recordHint}>Tap to Capture</Text>
+      </View>
+
+      <Modal visible={showModal} animationType="slide" statusBarTranslucent>
+        {photoState === "camera" ? (
+          <View style={cameraStyles.container}>
+            <CameraView ref={cameraRef} style={cameraStyles.camera} facing="back" />
+            <View style={cameraStyles.controls}>
+              <TouchableOpacity
+                style={cameraStyles.cancelBtn}
+                onPress={() => setPhotoState("idle")}
+              >
+                <Ionicons name="close" size={28} color="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity style={cameraStyles.shutterBtn} onPress={takePicture}>
+                <View style={cameraStyles.shutterInner} />
+              </TouchableOpacity>
+              <View style={{ width: 56 }} />
+            </View>
+          </View>
+        ) : capturedUri ? (
+          <View style={cameraStyles.container}>
+            <Image source={{ uri: capturedUri }} style={cameraStyles.preview} resizeMode="contain" />
+            <View style={cameraStyles.previewControls}>
+              <TouchableOpacity style={cameraStyles.retakeBtn} onPress={handleRetake}>
+                <Text style={cameraStyles.retakeBtnText}>Retake</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={cameraStyles.usePhotoBtn} onPress={handleUsePhoto}>
+                <Text style={cameraStyles.usePhotoBtnText}>Use Photo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+      </Modal>
+    </>
+  );
+}
+
 export default function HomeScreen() {
   const {
     classroomId,
@@ -506,20 +849,11 @@ export default function HomeScreen() {
                 onSaved={handleObservationSaved}
               />
             ) : (
-              <View style={styles.recordArea}>
-                <TouchableOpacity
-                  style={[styles.recordBtn, { backgroundColor: Colors.accent }]}
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    if (Platform.OS !== "web") {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    }
-                  }}
-                >
-                  <Ionicons name="camera" size={32} color="#FFFFFF" />
-                </TouchableOpacity>
-                <Text style={styles.recordHint}>Tap to Capture</Text>
-              </View>
+              <PhotoRecorder
+                classChildren={children}
+                classroomId={classroomId!}
+                onSaved={handleObservationSaved}
+              />
             )}
           </View>
         </View>
@@ -729,5 +1063,86 @@ const styles = StyleSheet.create({
   },
   hintError: {
     color: Colors.error,
+  },
+});
+
+const cameraStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
+  camera: {
+    flex: 1,
+  },
+  preview: {
+    flex: 1,
+  },
+  controls: {
+    position: "absolute",
+    bottom: 48,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 40,
+  },
+  cancelBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  shutterBtn: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 4,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  shutterInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#FFFFFF",
+  },
+  previewControls: {
+    position: "absolute",
+    bottom: 48,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 24,
+    paddingHorizontal: 32,
+  },
+  retakeBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+  },
+  retakeBtnText: {
+    fontSize: 16,
+    fontFamily: "Nunito_600SemiBold",
+    color: "#FFFFFF",
+  },
+  usePhotoBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 16,
+    backgroundColor: Colors.accent,
+    alignItems: "center",
+  },
+  usePhotoBtnText: {
+    fontSize: 16,
+    fontFamily: "Nunito_700Bold",
+    color: "#FFFFFF",
   },
 });
