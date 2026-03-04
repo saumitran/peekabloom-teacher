@@ -20,7 +20,6 @@ import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { Audio } from "expo-av";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -407,24 +406,10 @@ function PhotoRecorder({
 
   const processAndSave = async (finalTranscript: string, photoUri: string) => {
     try {
-      // Compress photo
-      let result = await manipulateAsync(
-        photoUri,
-        [{ resize: { width: 800 } }],
-        { compress: 0.5, format: SaveFormat.JPEG }
-      );
-
-      // Check size and reduce quality further if over 100KB
-      const sizeCheck = await fetch(result.uri);
-      const sizeBlob = await sizeCheck.blob();
-      if (sizeBlob.size > 100 * 1024) {
-        result = await manipulateAsync(result.uri, [], { compress: 0.3, format: SaveFormat.JPEG });
-      }
-
-      // Upload to Supabase storage
-      const uploadResp = await fetch(result.uri);
-      const photoBlob = await uploadResp.blob();
-      const path = `${classroomId}/${Date.now()}.jpg`;
+      // Upload photo to Supabase storage
+      const response = await fetch(photoUri);
+      const blob = await response.blob();
+      const path = `photos/${Date.now()}.jpg`;
 
       const { error: uploadError } = await supabase.storage
         .from("photos")
