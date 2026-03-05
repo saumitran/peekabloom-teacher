@@ -6,7 +6,8 @@
       "Bash(git push origin main)",
       "Bash(git add app/home.tsx && git diff --staged --stat)",
       "Bash(git add -A && git commit -m \"Simplify: XHR 2xx check and timeout\" && git push)",
-      "Bash(git add -A && git commit -m \"Add photo compression - target 250KB\" && git push)"
+      "Bash(git add -A && git commit -m \"Add photo compression - target 250KB\" && git push)",
+      "Bash(git add -A && git commit -m \"Simplify: memoize childMap, remove FeedObs duplicate, narrow select\" && git push)"
     ]
   }
 }

@@ -22,8 +22,10 @@ export interface Observation {
   id: string;
   child_id: string;
   classroom_id: string;
-  observation_text: string;
   parsed_content: string;
+  hdlh_tags: string[];
+  elect_tags: string[];
+  photo_url: string | null;
   status: "pending" | "approved" | "rejected";
   created_at: string;
 }

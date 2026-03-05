@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   StyleSheet,
   Text,
@@ -7,12 +7,12 @@ import {
   FlatList,
   ActivityIndicator,
   Platform,
-  RefreshControl,
   Modal,
   Alert,
   Image,
+  TextInput,
 } from "react-native";
-import { router, useFocusEffect } from "expo-router";
+import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -27,11 +27,27 @@ import {
 } from "@/lib/speechRecognition";
 import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
-import { supabase, type Child } from "@/lib/supabase";
+import { supabase, type Child, type Observation } from "@/lib/supabase";
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 type RecordingTab = "voice" | "photo";
 type UiState = "idle" | "recording" | "parsing" | "saved" | "error";
+
+
+function formatTimestamp(created_at: string): string {
+  const date = new Date(created_at);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const obsDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (obsDay.getTime() === today.getTime()) {
+    return `Today ${date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+  } else if (obsDay.getTime() === yesterday.getTime()) {
+    return "Yesterday";
+  }
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 function ChildCard({ child, index }: { child: Child; index: number }) {
   const words = (child.name || "").trim().split(/\s+/);
@@ -64,6 +80,77 @@ function ChildCard({ child, index }: { child: Child; index: number }) {
         </Text>
       </TouchableOpacity>
     </Animated.View>
+  );
+}
+
+function ObservationCard({
+  obs,
+  child,
+  onApprove,
+  onEdit,
+  onDelete,
+}: {
+  obs: Observation;
+  child: Child | undefined;
+  onApprove: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!obs.photo_url) return;
+    if (obs.photo_url.startsWith("http")) {
+      setPhotoUri(obs.photo_url);
+    } else {
+      supabase.storage
+        .from("photos")
+        .createSignedUrl(obs.photo_url, 3600)
+        .then(({ data }) => {
+          if (data?.signedUrl) setPhotoUri(data.signedUrl);
+        });
+    }
+  }, [obs.photo_url]);
+
+  const isPending = obs.status === "pending";
+  const hdlhTags = Array.isArray(obs.hdlh_tags) ? obs.hdlh_tags : [];
+  const electTags = Array.isArray(obs.elect_tags) ? obs.elect_tags : [];
+
+  return (
+    <View style={[feedStyles.card, isPending && feedStyles.cardPending]}>
+      <View style={feedStyles.cardHeader}>
+        <Text style={feedStyles.cardChildName}>{child?.name ?? "Unknown"}</Text>
+        <Text style={feedStyles.cardTimestamp}>{formatTimestamp(obs.created_at)}</Text>
+      </View>
+      <Text style={feedStyles.cardContent}>{obs.parsed_content}</Text>
+      {photoUri ? (
+        <Image source={{ uri: photoUri }} style={feedStyles.cardPhoto} resizeMode="cover" />
+      ) : null}
+      {hdlhTags.length > 0 || electTags.length > 0 ? (
+        <View style={feedStyles.tagsRow}>
+          {[...hdlhTags, ...electTags].map((tag, idx) => (
+            <View key={`${idx}-${tag}`} style={feedStyles.tag}>
+              <Text style={feedStyles.tagText}>{tag}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {isPending ? (
+        <View style={feedStyles.actions}>
+          <TouchableOpacity style={feedStyles.approveBtn} onPress={onApprove}>
+            <Ionicons name="checkmark" size={15} color="#FFFFFF" />
+            <Text style={feedStyles.actionBtnText}>Approve</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={feedStyles.editBtn} onPress={onEdit}>
+            <Ionicons name="pencil" size={15} color="#FFFFFF" />
+            <Text style={feedStyles.actionBtnText}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={feedStyles.deleteBtn} onPress={onDelete}>
+            <Ionicons name="trash" size={15} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -649,48 +736,37 @@ export default function HomeScreen() {
   } = useClassroom();
   const insets = useSafeAreaInsets();
   const [children, setChildren] = useState<Child[]>([]);
+  const [observations, setObservations] = useState<Observation[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
+  const [editingObs, setEditingObs] = useState<Observation | null>(null);
+  const [editText, setEditText] = useState("");
 
   const webTopInset = Platform.OS === "web" ? 67 : 0;
   const webBottomInset = Platform.OS === "web" ? 34 : 0;
 
-  const fetchData = useCallback(async () => {
+  const fetchChildren = useCallback(async () => {
     if (!classroomId) return;
-    try {
-      const [childRes, obsRes] = await Promise.all([
-        supabase
-          .from("children")
-          .select("*")
-          .eq("classroom_id", classroomId)
-          .order("name"),
-        supabase
-          .from("observations")
-          .select("id", { count: "exact" })
-          .eq("classroom_id", classroomId)
-          .eq("status", "pending"),
-      ]);
-
-      if (childRes.data) setChildren(childRes.data);
-      setPendingCount(obsRes.count || 0);
-    } catch (e) {
-      console.error("[Peekabloom] Failed to fetch data:", e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    const { data } = await supabase
+      .from("children")
+      .select("*")
+      .eq("classroom_id", classroomId)
+      .order("name");
+    if (data) setChildren(data);
   }, [classroomId]);
 
-  const fetchPendingCount = useCallback(async () => {
+  const fetchFeed = useCallback(async () => {
     if (!classroomId) return;
-    const { count } = await supabase
+    const { data } = await supabase
       .from("observations")
-      .select("id", { count: "exact" })
+      .select("id, child_id, classroom_id, parsed_content, hdlh_tags, elect_tags, photo_url, status, created_at")
       .eq("classroom_id", classroomId)
-      .eq("status", "pending");
-    setPendingCount(count || 0);
+      .order("created_at", { ascending: false });
+    if (data) {
+      setObservations(data as Observation[]);
+      setPendingCount(data.filter((o) => o.status === "pending").length);
+    }
   }, [classroomId]);
 
   useEffect(() => {
@@ -698,23 +774,42 @@ export default function HomeScreen() {
       router.replace("/");
       return;
     }
-    fetchData();
-  }, [classroomId, classroomLoading, fetchData]);
+    Promise.all([fetchChildren(), fetchFeed()]).finally(() => setLoading(false));
+  }, [classroomId, classroomLoading, fetchChildren, fetchFeed]);
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchPendingCount();
-    }, [fetchPendingCount])
-  );
+  const handleApprove = useCallback(async (id: string) => {
+    await supabase.from("observations").update({ status: "approved" }).eq("id", id);
+    fetchFeed();
+  }, [fetchFeed]);
 
-  const handleObservationSaved = useCallback(() => {
-    setPendingCount((n) => n + 1);
+  const handleDelete = useCallback((id: string) => {
+    Alert.alert("Delete observation?", "This cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          await supabase.from("observations").delete().eq("id", id);
+          fetchFeed();
+        },
+      },
+    ]);
+  }, [fetchFeed]);
+
+  const handleEdit = useCallback((obs: Observation) => {
+    setEditingObs(obs);
+    setEditText(obs.parsed_content);
   }, []);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchData();
-  };
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingObs) return;
+    await supabase
+      .from("observations")
+      .update({ parsed_content: editText })
+      .eq("id", editingObs.id);
+    setEditingObs(null);
+    fetchFeed();
+  }, [editingObs, editText, fetchFeed]);
 
   if (classroomLoading || loading) {
     return (
@@ -725,49 +820,41 @@ export default function HomeScreen() {
     );
   }
 
+  const childMap = useMemo(() => new Map(children.map((c) => [c.id, c])), [children]);
+
   const renderChild = ({ item, index }: { item: Child; index: number }) => (
     <ChildCard child={item} index={index} />
   );
 
-  try {
-    return (
-      <View
-        style={[
-          styles.container,
-          {
-            paddingTop: insets.top + webTopInset,
-            paddingBottom: insets.bottom + webBottomInset,
-          },
-        ]}
-      >
-        <StatusBar style="light" />
+  const renderObservation = useCallback(({ item }: { item: Observation }) => (
+    <ObservationCard
+      obs={item}
+      child={childMap.get(item.child_id)}
+      onApprove={() => handleApprove(item.id)}
+      onEdit={() => handleEdit(item)}
+      onDelete={() => handleDelete(item.id)}
+    />
+  ), [childMap, handleApprove, handleEdit, handleDelete]);
 
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.classroomDot} />
-            <Text style={styles.classroomName} numberOfLines={1}>
-              {classroomName || "Classroom"}
-            </Text>
-          </View>
-          <View style={styles.headerRight}>
-            <TouchableOpacity
-              style={styles.reviewBtn}
-              activeOpacity={0.75}
-              onPress={() => {
-                if (Platform.OS !== "web") {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }
-                router.push("/review");
-              }}
-            >
-              <Ionicons name="documents-outline" size={20} color={Colors.text} />
-              <Text style={styles.reviewBtnText}>Review</Text>
-              {pendingCount > 0 ? (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{pendingCount}</Text>
-                </View>
-              ) : null}
-            </TouchableOpacity>
+  return (
+    <View
+      style={[
+        styles.container,
+        { paddingTop: insets.top + webTopInset, paddingBottom: insets.bottom + webBottomInset },
+      ]}
+    >
+      <StatusBar style="light" />
+
+      <View style={styles.panels}>
+        {/* LEFT PANEL — children grid */}
+        <View style={styles.leftPanel}>
+          <View style={styles.leftHeader}>
+            <View style={styles.leftHeaderTitle}>
+              <View style={styles.classroomDot} />
+              <Text style={styles.classroomName} numberOfLines={1}>
+                {classroomName || "Classroom"}
+              </Text>
+            </View>
             <TouchableOpacity
               style={styles.logoutBtn}
               activeOpacity={0.6}
@@ -776,115 +863,141 @@ export default function HomeScreen() {
                 router.replace("/");
               }}
             >
-              <Ionicons name="log-out-outline" size={22} color={Colors.textMuted} />
+              <Ionicons name="log-out-outline" size={20} color={Colors.textMuted} />
             </TouchableOpacity>
           </View>
+
+          {children.length === 0 ? (
+            <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
+              <Ionicons name="people-outline" size={40} color={Colors.textDark} />
+              <Text style={styles.emptyTitle}>No children yet</Text>
+            </Animated.View>
+          ) : (
+            <FlatList
+              data={children}
+              renderItem={renderChild}
+              keyExtractor={(item) => item.id}
+              numColumns={2}
+              columnWrapperStyle={styles.gridRow}
+              contentContainerStyle={styles.gridContent}
+              showsVerticalScrollIndicator={false}
+            />
+          )}
         </View>
 
-        <View style={styles.body}>
-          <View style={styles.gridArea}>
-            {children.length === 0 ? (
-              <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
-                <Ionicons name="people-outline" size={48} color={Colors.textDark} />
-                <Text style={styles.emptyTitle}>No children yet</Text>
-                <Text style={styles.emptySubtitle}>
-                  Children will appear here once added to this classroom
-                </Text>
-              </Animated.View>
-            ) : (
-              <FlatList
-                data={children}
-                renderItem={renderChild}
-                keyExtractor={(item) => item.id}
-                numColumns={4}
-                columnWrapperStyle={styles.gridRow}
-                contentContainerStyle={styles.gridContent}
-                showsVerticalScrollIndicator={false}
-                scrollEnabled={children.length > 0}
-                refreshControl={
-                  <RefreshControl
-                    refreshing={refreshing}
-                    onRefresh={onRefresh}
-                    tintColor={Colors.primary}
-                  />
-                }
-              />
-            )}
+        {/* MIDDLE PANEL — classroom feed */}
+        <View style={styles.middlePanel}>
+          <View style={styles.feedHeader}>
+            <Text style={styles.feedTitle}>Classroom Feed</Text>
+            {pendingCount > 0 ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{pendingCount}</Text>
+              </View>
+            ) : null}
           </View>
 
-          <View style={styles.recordingBar}>
-            <View style={styles.tabRow}>
+          {observations.length === 0 ? (
+            <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
+              <Ionicons name="document-text-outline" size={40} color={Colors.textDark} />
+              <Text style={styles.emptyTitle}>No observations yet</Text>
+              <Text style={styles.emptySubtitle}>
+                Observations will appear here after recording
+              </Text>
+            </Animated.View>
+          ) : (
+            <FlatList
+              data={observations}
+              renderItem={renderObservation}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.feedContent}
+              showsVerticalScrollIndicator={false}
+            />
+          )}
+        </View>
+
+        {/* RIGHT PANEL — composer */}
+        <View style={styles.rightPanel}>
+          <View style={styles.tabRow}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === "voice" && styles.tabActive]}
+              activeOpacity={0.75}
+              onPress={() => {
+                setActiveTab("voice");
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+            >
+              <Ionicons
+                name="mic"
+                size={18}
+                color={activeTab === "voice" ? Colors.text : Colors.textMuted}
+              />
+              <Text style={[styles.tabText, activeTab === "voice" && styles.tabTextActive]}>
+                Voice
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === "photo" && styles.tabActive]}
+              activeOpacity={0.75}
+              onPress={() => {
+                setActiveTab("photo");
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+            >
+              <Ionicons
+                name="camera"
+                size={18}
+                color={activeTab === "photo" ? Colors.text : Colors.textMuted}
+              />
+              <Text style={[styles.tabText, activeTab === "photo" && styles.tabTextActive]}>
+                Photo
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeTab === "voice" ? (
+            <VoiceRecorder
+              classChildren={children}
+              classroomId={classroomId!}
+              onSaved={fetchFeed}
+            />
+          ) : (
+            <PhotoRecorder
+              classChildren={children}
+              classroomId={classroomId!}
+              onSaved={fetchFeed}
+            />
+          )}
+        </View>
+      </View>
+
+      {/* Edit modal */}
+      <Modal visible={!!editingObs} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Edit Observation</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={editText}
+              onChangeText={setEditText}
+              multiline
+              autoFocus
+            />
+            <View style={styles.modalActions}>
               <TouchableOpacity
-                style={[styles.tab, activeTab === "voice" && styles.tabActive]}
-                activeOpacity={0.75}
-                onPress={() => {
-                  setActiveTab("voice");
-                  if (Platform.OS !== "web") {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  }
-                }}
+                style={styles.modalCancelBtn}
+                onPress={() => setEditingObs(null)}
               >
-                <Ionicons
-                  name="mic"
-                  size={18}
-                  color={activeTab === "voice" ? Colors.text : Colors.textMuted}
-                />
-                <Text
-                  style={[styles.tabText, activeTab === "voice" && styles.tabTextActive]}
-                >
-                  Voice
-                </Text>
+                <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tab, activeTab === "photo" && styles.tabActive]}
-                activeOpacity={0.75}
-                onPress={() => {
-                  setActiveTab("photo");
-                  if (Platform.OS !== "web") {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  }
-                }}
-              >
-                <Ionicons
-                  name="camera"
-                  size={18}
-                  color={activeTab === "photo" ? Colors.text : Colors.textMuted}
-                />
-                <Text
-                  style={[styles.tabText, activeTab === "photo" && styles.tabTextActive]}
-                >
-                  Photo
-                </Text>
+              <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveEdit}>
+                <Text style={styles.modalSaveText}>Save</Text>
               </TouchableOpacity>
             </View>
-
-            {activeTab === "voice" ? (
-              <VoiceRecorder
-                classChildren={children}
-                classroomId={classroomId!}
-                onSaved={handleObservationSaved}
-              />
-            ) : (
-              <PhotoRecorder
-                classChildren={children}
-                classroomId={classroomId!}
-                onSaved={handleObservationSaved}
-              />
-            )}
           </View>
         </View>
-      </View>
-    );
-  } catch (e) {
-    console.error("[Peekabloom] HomeScreen render error:", e);
-    return (
-      <View style={styles.container}>
-        <Text style={{ color: Colors.text, padding: 24 }}>
-          Render error: {String(e)}
-        </Text>
-      </View>
-    );
-  }
+      </Modal>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -892,48 +1005,82 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  header: {
+  panels: {
+    flex: 1,
+    flexDirection: "row",
+  },
+  // LEFT PANEL
+  leftPanel: {
+    width: 220,
+    backgroundColor: Colors.surface,
+    borderRightWidth: 1,
+    borderRightColor: Colors.background,
+    paddingTop: 16,
+  },
+  leftHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 24,
-    paddingVertical: 16,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
   },
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    flex: 1,
-  },
-  classroomDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: Colors.accent,
-  },
-  classroomName: {
-    fontSize: 22,
-    fontFamily: "Nunito_700Bold",
-    color: Colors.text,
-  },
-  headerRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  reviewBtn: {
+  leftHeaderTitle: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    flex: 1,
+    minWidth: 0,
   },
-  reviewBtnText: {
+  classroomDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.accent,
+    flexShrink: 0,
+  },
+  classroomName: {
     fontSize: 15,
-    fontFamily: "Nunito_600SemiBold",
+    fontFamily: "Nunito_700Bold",
     color: Colors.text,
+    flexShrink: 1,
+  },
+  logoutBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  gridContent: {
+    paddingHorizontal: 10,
+    paddingBottom: 16,
+    gap: 8,
+  },
+  gridRow: {
+    gap: 8,
+  },
+  // MIDDLE PANEL
+  middlePanel: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  feedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  feedTitle: {
+    fontSize: 18,
+    fontFamily: "Nunito_700Bold",
+    color: Colors.text,
+  },
+  feedContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+    gap: 10,
   },
   badge: {
     backgroundColor: Colors.primary,
@@ -949,51 +1096,40 @@ const styles = StyleSheet.create({
     fontFamily: "Nunito_700Bold",
     color: "#FFFFFF",
   },
-  logoutBtn: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
+  // RIGHT PANEL
+  rightPanel: {
+    width: 260,
+    backgroundColor: Colors.surface,
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.background,
+    padding: 16,
+    gap: 16,
   },
-  body: {
-    flex: 1,
-    flexDirection: "row",
-  },
-  gridArea: {
-    flex: 1,
-    paddingHorizontal: 24,
-  },
-  gridContent: {
-    paddingBottom: 24,
-    gap: 12,
-  },
-  gridRow: {
-    gap: 12,
-  },
+  // Shared
   childCard: {
     flex: 1,
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 10,
     alignItems: "center",
-    gap: 10,
-    minHeight: 110,
+    gap: 6,
+    minHeight: 88,
     justifyContent: "center",
   },
   childAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
   },
   childInitials: {
-    fontSize: 18,
+    fontSize: 15,
     fontFamily: "Nunito_700Bold",
     color: "#FFFFFF",
   },
   childName: {
-    fontSize: 14,
+    fontSize: 12,
     fontFamily: "Nunito_600SemiBold",
     color: Colors.text,
     textAlign: "center",
@@ -1002,28 +1138,22 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+    gap: 10,
+    padding: 24,
   },
   emptyTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: "Nunito_700Bold",
     color: Colors.textMuted,
+    textAlign: "center",
   },
   emptySubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: "Nunito_400Regular",
     color: Colors.textDark,
     textAlign: "center",
-    maxWidth: 280,
   },
-  recordingBar: {
-    width: 280,
-    backgroundColor: Colors.surface,
-    borderTopLeftRadius: 24,
-    borderBottomLeftRadius: 24,
-    padding: 20,
-    gap: 20,
-  },
+  // Tabs (right panel)
   tabRow: {
     flexDirection: "row",
     backgroundColor: Colors.background,
@@ -1036,7 +1166,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 10,
   },
   tabActive: {
@@ -1050,6 +1180,7 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: Colors.text,
   },
+  // Recorder
   recordArea: {
     flex: 1,
     alignItems: "center",
@@ -1079,6 +1210,154 @@ const styles = StyleSheet.create({
   },
   hintError: {
     color: Colors.error,
+  },
+  // Edit modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalBox: {
+    backgroundColor: Colors.surface,
+    borderRadius: 20,
+    padding: 24,
+    width: 480,
+    gap: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "Nunito_700Bold",
+    color: Colors.text,
+  },
+  modalInput: {
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 14,
+    fontFamily: "Nunito_400Regular",
+    color: Colors.text,
+    minHeight: 120,
+    textAlignVertical: "top",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "flex-end",
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.background,
+  },
+  modalCancelText: {
+    fontSize: 15,
+    fontFamily: "Nunito_600SemiBold",
+    color: Colors.textMuted,
+  },
+  modalSaveBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+  },
+  modalSaveText: {
+    fontSize: 15,
+    fontFamily: "Nunito_700Bold",
+    color: "#FFFFFF",
+  },
+});
+
+const feedStyles = StyleSheet.create({
+  card: {
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    padding: 14,
+    gap: 8,
+  },
+  cardPending: {
+    opacity: 0.6,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  cardChildName: {
+    fontSize: 14,
+    fontFamily: "Nunito_700Bold",
+    color: Colors.text,
+  },
+  cardTimestamp: {
+    fontSize: 12,
+    fontFamily: "Nunito_400Regular",
+    color: Colors.textMuted,
+  },
+  cardContent: {
+    fontSize: 13,
+    fontFamily: "Nunito_400Regular",
+    color: Colors.text,
+    lineHeight: 19,
+  },
+  cardPhoto: {
+    width: "100%",
+    height: 160,
+    borderRadius: 10,
+  },
+  tagsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  tag: {
+    backgroundColor: "#7BC4A0",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  tagText: {
+    fontSize: 11,
+    fontFamily: "Nunito_600SemiBold",
+    color: "#FFFFFF",
+  },
+  actions: {
+    flexDirection: "row",
+    gap: 8,
+    paddingTop: 2,
+  },
+  approveBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: "#7BC4A0",
+    borderRadius: 8,
+    paddingVertical: 7,
+  },
+  editBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: "#E07A6B",
+    borderRadius: 8,
+    paddingVertical: 7,
+  },
+  deleteBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#C0392B",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  actionBtnText: {
+    fontSize: 12,
+    fontFamily: "Nunito_600SemiBold",
+    color: "#FFFFFF",
   },
 });
 
