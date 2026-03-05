@@ -5,7 +5,8 @@
       "Bash(git commit -m \"$\\(cat <<'EOF'\nFix review screen and pending count\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git push origin main)",
       "Bash(git add app/home.tsx && git diff --staged --stat)",
-      "Bash(git add -A && git commit -m \"Simplify: XHR 2xx check and timeout\" && git push)"
+      "Bash(git add -A && git commit -m \"Simplify: XHR 2xx check and timeout\" && git push)",
+      "Bash(git add -A && git commit -m \"Add photo compression - target 250KB\" && git push)"
     ]
   }
 }

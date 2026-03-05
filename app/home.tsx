@@ -28,6 +28,7 @@ import {
 import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
 import { supabase, type Child } from "@/lib/supabase";
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 type RecordingTab = "voice" | "photo";
 type UiState = "idle" | "recording" | "parsing" | "saved" | "error";
@@ -285,6 +286,30 @@ function VoiceRecorder({
   );
 }
 
+async function compressPhoto(uri: string): Promise<string> {
+  // First pass: resize to max 1200px wide, quality 0.7
+  let result = await manipulateAsync(
+    uri,
+    [{ resize: { width: 1200 } }],
+    { compress: 0.7, format: SaveFormat.JPEG }
+  );
+
+  // Check size
+  const response = await fetch(result.uri);
+  const blob = await response.blob();
+
+  // Second pass if still over 250KB: reduce further
+  if (blob.size > 250000) {
+    result = await manipulateAsync(
+      result.uri,
+      [{ resize: { width: 900 } }],
+      { compress: 0.6, format: SaveFormat.JPEG }
+    );
+  }
+
+  return result.uri;
+}
+
 type PhotoState = "idle" | "camera" | "preview" | "describing" | "parsing" | "saved" | "error";
 
 function PhotoRecorder({
@@ -390,10 +415,12 @@ function PhotoRecorder({
   const processAndSave = async (finalTranscript: string, photoUri: string) => {
     try {
       // Upload photo to Supabase storage
-      const response = await fetch(photoUri);
+      const compressedUri = await compressPhoto(photoUri);
+      const response = await fetch(compressedUri);
       const photoBlob = await response.blob();
       console.log('[Peekabloom] photoUri:', photoUri);
       console.log('[Peekabloom] blob size:', photoBlob.size);
+      console.log('[Peekabloom] compressed blob size:', photoBlob.size);
       console.log('[Peekabloom] blob type:', photoBlob.type);
       const path = `${Date.now()}.jpg`;
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
