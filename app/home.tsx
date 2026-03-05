@@ -260,10 +260,12 @@ function VoiceRecorder({
   classChildren,
   classroomId,
   onQueued,
+  isOnline,
 }: {
   classChildren: Child[];
   classroomId: string;
   onQueued: (data: { transcript: string; photoUri: string | null }) => void;
+  isOnline: boolean;
 }) {
   "use no memo";
   const [isRecording, setIsRecording] = useState(false);
@@ -280,6 +282,10 @@ function VoiceRecorder({
   });
 
   const handlePressIn = async () => {
+    if (!isOnline) {
+      Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+      return;
+    }
     if (uiState !== "idle") return;
     try {
       if (Platform.OS !== "web") {
@@ -524,10 +530,12 @@ type PhotoState = "idle" | "camera" | "preview" | "describing" | "parsing" | "sa
 
 function PhotoRecorder({
   onQueued,
+  isOnline,
 }: {
   classChildren: Child[];
   classroomId: string;
   onQueued: (data: { transcript: string; photoUri: string | null }) => void;
+  isOnline: boolean;
 }) {
   "use no memo";
   const [permission, requestPermission] = useCameraPermissions();
@@ -587,6 +595,10 @@ function PhotoRecorder({
   };
 
   const handlePressIn = async () => {
+    if (!isOnline) {
+      Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+      return;
+    }
     if (photoState !== "describing") return;
     try {
       if (Platform.OS !== "web" && speechRecognitionAvailable) {
@@ -787,11 +799,11 @@ export default function HomeScreen() {
 
     async function checkConnection() {
       try {
-        await fetch('https://www.google.com/generate_204', {
+        const response = await fetch('https://www.google.com/generate_204', {
           method: 'HEAD',
           cache: 'no-cache',
         });
-        if (!cancelled) setIsOnline(true);
+        if (!cancelled) setIsOnline(response.ok);
       } catch {
         if (!cancelled) setIsOnline(false);
       }
@@ -814,18 +826,9 @@ export default function HomeScreen() {
     fetchFeed();
   }, [fetchFeed]);
 
-  const handleDelete = useCallback((id: string) => {
-    Alert.alert("Delete observation?", "This cannot be undone.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          await supabase.from("observations").delete().eq("id", id);
-          fetchFeed();
-        },
-      },
-    ]);
+  const handleDelete = useCallback(async (id: string) => {
+    await supabase.from("observations").delete().eq("id", id);
+    fetchFeed();
   }, [fetchFeed]);
 
   const handleEdit = useCallback((obs: Observation) => {
@@ -1063,12 +1066,14 @@ export default function HomeScreen() {
               classChildren={children}
               classroomId={classroomId!}
               onQueued={handleQueued}
+              isOnline={isOnline}
             />
           ) : (
             <PhotoRecorder
               classChildren={children}
               classroomId={classroomId!}
               onQueued={handleQueued}
+              isOnline={isOnline}
             />
           )}
         </View>
