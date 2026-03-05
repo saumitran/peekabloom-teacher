@@ -11,6 +11,7 @@ import {
   Alert,
   Image,
   TextInput,
+  Animated as RNAnimated,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -32,6 +33,20 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 type RecordingTab = "voice" | "photo";
 type UiState = "idle" | "recording" | "parsing" | "saved" | "error";
+
+type QueueItem = {
+  id: string;
+  transcript: string;
+  photoUri: string | null;
+  classChildren: Child[];
+  classroomId: string;
+  status: "queued" | "processing" | "failed";
+  queuedAt: number;
+};
+
+type FeedItem =
+  | ({ _type: "placeholder" } & QueueItem)
+  | ({ _type: "observation" } & Observation);
 
 
 function formatTimestamp(created_at: string): string {
@@ -154,14 +169,76 @@ function ObservationCard({
   );
 }
 
+function PlaceholderCard({
+  item,
+  onRetry,
+}: {
+  item: QueueItem;
+  onRetry: () => void;
+}) {
+  const pulse = useRef(new RNAnimated.Value(1)).current;
+  const [elapsed, setElapsed] = useState(Date.now() - item.queuedAt);
+
+  useEffect(() => {
+    if (item.status === "failed") return;
+    const anim = RNAnimated.loop(
+      RNAnimated.sequence([
+        RNAnimated.timing(pulse, { toValue: 0.4, duration: 800, useNativeDriver: true }),
+        RNAnimated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [item.status, pulse]);
+
+  useEffect(() => {
+    if (item.status === "failed") return;
+    const timer = setInterval(() => setElapsed(Date.now() - item.queuedAt), 1000);
+    return () => clearInterval(timer);
+  }, [item.status, item.queuedAt]);
+
+  const isFailed = item.status === "failed";
+
+  return (
+    <RNAnimated.View
+      style={[
+        placeholderStyles.card,
+        isFailed && placeholderStyles.cardFailed,
+        { opacity: isFailed ? 1 : pulse },
+      ]}
+    >
+      <View style={placeholderStyles.row}>
+        {isFailed ? (
+          <Ionicons name="alert-circle" size={18} color="#C0392B" />
+        ) : (
+          <ActivityIndicator size="small" color="#E07A6B" />
+        )}
+        <Text style={[placeholderStyles.label, isFailed && placeholderStyles.labelFailed]}>
+          {isFailed ? "Failed to save" : "Processing..."}
+        </Text>
+      </View>
+      {!isFailed && elapsed > 5000 ? (
+        <Text style={placeholderStyles.subText}>
+          May take a moment on slow connections
+        </Text>
+      ) : null}
+      {isFailed ? (
+        <TouchableOpacity style={placeholderStyles.retryBtn} onPress={onRetry}>
+          <Text style={placeholderStyles.retryBtnText}>Retry</Text>
+        </TouchableOpacity>
+      ) : null}
+    </RNAnimated.View>
+  );
+}
+
 function VoiceRecorder({
   classChildren,
   classroomId,
-  onSaved,
+  onQueued,
 }: {
   classChildren: Child[];
   classroomId: string;
-  onSaved: () => void;
+  onQueued: (data: { transcript: string; photoUri: string | null }) => void;
 }) {
   "use no memo";
   const [isRecording, setIsRecording] = useState(false);
@@ -231,90 +308,16 @@ function VoiceRecorder({
         }
         await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
       }
+      const finalTranscript = transcriptRef.current.trim();
       setIsRecording(false);
-      setUiState("parsing");
-      await parseAndSave(transcriptRef.current.trim());
+      setTranscript("");
+      transcriptRef.current = "";
+      onQueued({ transcript: finalTranscript, photoUri: null });
+      setUiState("saved");
+      setTimeout(() => setUiState("idle"), 1000);
     } catch (e) {
       console.error("[Peekabloom] Stop recording error:", e);
       setIsRecording(false);
-      setUiState("error");
-    }
-  };
-
-  const parseAndSave = async (finalTranscript: string) => {
-    const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
-    const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
-
-    if (!finalTranscript) {
-      setUiState("error");
-      return;
-    }
-
-    try {
-      const response = await fetch(parseUrl!, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${parseKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          transcript: finalTranscript,
-          children: classChildren,
-          classroom_id: classroomId,
-          photo_url: null,
-        }),
-      });
-
-      if (!response.ok) {
-        console.error("[Peekabloom] Parse API error:", response.status);
-        setUiState("error");
-        return;
-      }
-
-      const data = await response.json();
-      const observations = data.observations ?? [];
-
-      if (observations.length === 0) {
-        setUiState("error");
-        return;
-      }
-
-      const rows = observations.map((obs: {
-        child_id: string;
-        classroom_id: string;
-        parsed_content: string;
-        hdlh_tags: unknown;
-        elect_tags: unknown;
-        photo_url: string | null;
-        status: string;
-      }) => ({
-        child_id: obs.child_id,
-        classroom_id: obs.classroom_id,
-        raw_transcript: finalTranscript,
-        parsed_content: obs.parsed_content,
-        hdlh_tags: obs.hdlh_tags,
-        elect_tags: obs.elect_tags,
-        photo_url: obs.photo_url ?? null,
-        status: obs.status ?? "pending",
-      }));
-
-      const { error: saveError } = await supabase
-        .from("observations")
-        .insert(rows);
-
-      if (saveError) {
-        console.error("[Peekabloom] Supabase save error:", saveError);
-        setUiState("error");
-        return;
-      }
-
-      setUiState("saved");
-      setTranscript("");
-      transcriptRef.current = "";
-      onSaved();
-      setTimeout(() => setUiState("idle"), 2000);
-    } catch (e) {
-      console.error("[Peekabloom] parseAndSave error:", e);
       setUiState("error");
     }
   };
@@ -333,13 +336,11 @@ function VoiceRecorder({
   const hintText =
     uiState === "recording"
       ? "Recording..."
-      : uiState === "parsing"
-        ? "Parsing..."
-        : uiState === "saved"
-          ? "Saved"
-          : uiState === "error"
-            ? "Try Again"
-            : "Hold to Record";
+      : uiState === "saved"
+        ? "Queued ✓"
+        : uiState === "error"
+          ? "Try Again"
+          : "Hold to Record";
 
   return (
     <View style={styles.recordArea}>
@@ -397,16 +398,111 @@ async function compressPhoto(uri: string): Promise<string> {
   return result.uri;
 }
 
+type ParsedObsRow = {
+  child_id: string;
+  classroom_id: string;
+  parsed_content: string;
+  hdlh_tags: unknown;
+  elect_tags: unknown;
+  photo_url: string | null;
+  status: string;
+};
+
+async function processQueueItem(item: QueueItem): Promise<void> {
+  let photoPath: string | null = null;
+
+  if (item.photoUri) {
+    const compressedUri = await compressPhoto(item.photoUri);
+    const photoResponse = await fetch(compressedUri);
+    const photoBlob = await photoResponse.blob();
+    console.log("[Peekabloom] compressed blob size:", photoBlob.size, "type:", photoBlob.type);
+
+    const path = `${Date.now()}.jpg`;
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const uploadUrl = `${supabaseUrl}/storage/v1/object/photos/${path}`;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", uploadUrl);
+        xhr.setRequestHeader("Authorization", `Bearer ${supabaseKey}`);
+        xhr.setRequestHeader("apikey", supabaseKey!);
+        xhr.setRequestHeader("Content-Type", "image/jpeg");
+        xhr.timeout = 30000;
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+        };
+        xhr.onerror = () => reject(new Error("XHR error"));
+        xhr.ontimeout = () => reject(new Error("Upload timed out"));
+        xhr.send(photoBlob);
+      });
+      photoPath = path;
+    } catch (uploadErr) {
+      console.error("[Peekabloom] Storage upload failed — check Supabase photos bucket RLS policy", uploadErr);
+    }
+  }
+
+  const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
+  const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
+  let apiObservations: ParsedObsRow[] = [];
+
+  if (item.transcript) {
+    const parseResponse = await fetch(parseUrl!, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${parseKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcript: item.transcript,
+        children: item.classChildren,
+        classroom_id: item.classroomId,
+        photo_url: photoPath,
+      }),
+    });
+    if (parseResponse.ok) {
+      const data = await parseResponse.json();
+      apiObservations = data.observations ?? [];
+    }
+  }
+
+  let rows;
+  if (apiObservations.length > 0) {
+    rows = apiObservations.map((obs) => ({
+      child_id: obs.child_id,
+      classroom_id: obs.classroom_id,
+      raw_transcript: item.transcript,
+      parsed_content: obs.parsed_content,
+      hdlh_tags: obs.hdlh_tags,
+      elect_tags: obs.elect_tags,
+      photo_url: photoPath,
+      status: obs.status ?? "pending",
+    }));
+  } else {
+    const parsedContent = item.transcript || "📸 Photo update";
+    rows = item.classChildren.map((child) => ({
+      child_id: child.id,
+      classroom_id: item.classroomId,
+      raw_transcript: item.transcript,
+      parsed_content: parsedContent,
+      hdlh_tags: [],
+      elect_tags: [],
+      photo_url: photoPath,
+      status: "pending",
+    }));
+  }
+
+  const { error: saveError } = await supabase.from("observations").insert(rows);
+  if (saveError) throw saveError;
+}
+
 type PhotoState = "idle" | "camera" | "preview" | "describing" | "parsing" | "saved" | "error";
 
 function PhotoRecorder({
-  classChildren,
-  classroomId,
-  onSaved,
+  onQueued,
 }: {
   classChildren: Child[];
   classroomId: string;
-  onSaved: () => void;
+  onQueued: (data: { transcript: string; photoUri: string | null }) => void;
 }) {
   "use no memo";
   const [permission, requestPermission] = useCameraPermissions();
@@ -489,132 +585,19 @@ function PhotoRecorder({
       if (Platform.OS !== "web" && speechRecognitionAvailable) {
         ExpoSpeechRecognitionModule.stop();
       }
+      const finalTranscript = transcriptRef.current.trim();
       setIsRecording(false);
-      setPhotoState("parsing");
-      await processAndSave(transcriptRef.current.trim(), capturedUri!);
-    } catch (e) {
-      console.error("[Peekabloom] Photo record stop error:", e);
-      setIsRecording(false);
-      setPhotoState("error");
-    }
-  };
-
-  const processAndSave = async (finalTranscript: string, photoUri: string) => {
-    try {
-      // Upload photo to Supabase storage
-      const compressedUri = await compressPhoto(photoUri);
-      const response = await fetch(compressedUri);
-      const photoBlob = await response.blob();
-      console.log('[Peekabloom] photoUri:', photoUri);
-      console.log('[Peekabloom] blob size:', photoBlob.size);
-      console.log('[Peekabloom] compressed blob size:', photoBlob.size);
-      console.log('[Peekabloom] blob type:', photoBlob.type);
-      const path = `${Date.now()}.jpg`;
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-      const uploadUrl = `${supabaseUrl}/storage/v1/object/photos/${path}`;
-
-      let photoPath: string | null = null;
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', uploadUrl);
-          xhr.setRequestHeader('Authorization', `Bearer ${supabaseKey}`);
-          xhr.setRequestHeader('apikey', supabaseKey!);
-          xhr.setRequestHeader('Content-Type', 'image/jpeg');
-          xhr.timeout = 30000;
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-          };
-          xhr.onerror = () => reject(new Error('XHR error'));
-          xhr.ontimeout = () => reject(new Error('Upload timed out'));
-          xhr.send(photoBlob);
-        });
-        photoPath = path;
-      } catch (uploadErr) {
-        console.error("[Peekabloom] Storage upload failed — check Supabase photos bucket RLS policy", uploadErr);
-      }
-
-      // Call parsing API
-      const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
-      const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
-      let observations: {
-        child_id: string;
-        classroom_id: string;
-        parsed_content: string;
-        hdlh_tags: unknown;
-        elect_tags: unknown;
-        photo_url: string | null;
-        status: string;
-      }[] = [];
-
-      if (finalTranscript) {
-        try {
-          const response = await fetch(parseUrl!, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${parseKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              transcript: finalTranscript,
-              children: classChildren,
-              classroom_id: classroomId,
-              photo_url: photoPath,
-            }),
-          });
-          if (response.ok) {
-            const data = await response.json();
-            observations = data.observations ?? [];
-          }
-        } catch (e) {
-          console.error("[Peekabloom] Parse API error:", e);
-        }
-      }
-
-      let rows;
-      if (observations.length > 0) {
-        rows = observations.map((obs) => ({
-          child_id: obs.child_id,
-          classroom_id: obs.classroom_id,
-          raw_transcript: finalTranscript,
-          parsed_content: obs.parsed_content,
-          hdlh_tags: obs.hdlh_tags,
-          elect_tags: obs.elect_tags,
-          photo_url: photoPath,
-          status: obs.status ?? "pending",
-        }));
-      } else {
-        // No children mentioned or empty transcript — one observation per child
-        const parsedContent = finalTranscript || "📸 Photo update";
-        rows = classChildren.map((child) => ({
-          child_id: child.id,
-          classroom_id: classroomId,
-          raw_transcript: finalTranscript,
-          parsed_content: parsedContent,
-          hdlh_tags: [],
-          elect_tags: [],
-          photo_url: photoPath,
-          status: "pending",
-        }));
-      }
-
-      const { error: saveError } = await supabase.from("observations").insert(rows);
-      if (saveError) {
-        console.error("[Peekabloom] Save error:", saveError);
-        setPhotoState("error");
-        return;
-      }
-
+      setTranscript("");
+      transcriptRef.current = "";
+      onQueued({ transcript: finalTranscript, photoUri: capturedUri! });
       setPhotoState("saved");
-      onSaved();
       setTimeout(() => {
         setPhotoState("idle");
         setCapturedUri(null);
-        setTranscript("");
-        transcriptRef.current = "";
-      }, 2000);
+      }, 1000);
     } catch (e) {
-      console.error("[Peekabloom] processAndSave error:", e);
+      console.error("[Peekabloom] Photo record stop error:", e);
+      setIsRecording(false);
       setPhotoState("error");
     }
   };
@@ -625,30 +608,25 @@ function PhotoRecorder({
   // Describing / processing states share the hold-to-record UI
   const inRecordingFlow =
     photoState === "describing" ||
-    photoState === "parsing" ||
     photoState === "saved" ||
     photoState === "error";
 
   if (inRecordingFlow) {
     const btnColor = isRecording
       ? "#D96A5C"
-      : photoState === "parsing"
-        ? Colors.textMuted
-        : photoState === "saved"
-          ? Colors.accent
-          : photoState === "error"
-            ? Colors.error
-            : Colors.primary;
+      : photoState === "saved"
+        ? Colors.accent
+        : photoState === "error"
+          ? Colors.error
+          : Colors.primary;
 
     const hintText = isRecording
       ? "Recording..."
-      : photoState === "parsing"
-        ? "Processing..."
-        : photoState === "saved"
-          ? "Saved"
-          : photoState === "error"
-            ? "Try Again"
-            : "Describe this photo...";
+      : photoState === "saved"
+        ? "Queued ✓"
+        : photoState === "error"
+          ? "Try Again"
+          : "Describe this photo...";
 
     return (
       <View style={styles.recordArea}>
@@ -660,12 +638,10 @@ function PhotoRecorder({
           activeOpacity={0.85}
           onPressIn={handlePressIn}
           onPressOut={handlePressOut}
-          disabled={photoState === "parsing" || photoState === "saved"}
+          disabled={photoState === "saved"}
           onPress={photoState === "error" ? () => setPhotoState("describing") : undefined}
         >
-          {photoState === "parsing" ? (
-            <ActivityIndicator color="#FFFFFF" size="large" />
-          ) : photoState === "saved" ? (
+          {photoState === "saved" ? (
             <Ionicons name="checkmark" size={36} color="#FFFFFF" />
           ) : (
             <Ionicons name="mic" size={32} color="#FFFFFF" />
@@ -737,7 +713,7 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [children, setChildren] = useState<Child[]>([]);
   const [observations, setObservations] = useState<Observation[]>([]);
-  const [pendingCount, setPendingCount] = useState(0);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
   const [editingObs, setEditingObs] = useState<Observation | null>(null);
@@ -765,7 +741,6 @@ export default function HomeScreen() {
       .order("created_at", { ascending: false });
     if (data) {
       setObservations(data as Observation[]);
-      setPendingCount(data.filter((o) => o.status === "pending").length);
     }
   }, [classroomId]);
 
@@ -811,6 +786,50 @@ export default function HomeScreen() {
     fetchFeed();
   }, [editingObs, editText, fetchFeed]);
 
+  const handleQueued = useCallback((data: { transcript: string; photoUri: string | null }) => {
+    const now = Date.now();
+    setQueue((prev) => [
+      ...prev,
+      {
+        id: String(now),
+        transcript: data.transcript,
+        photoUri: data.photoUri,
+        classChildren: children,
+        classroomId: classroomId!,
+        status: "queued" as const,
+        queuedAt: now,
+      },
+    ]);
+  }, [children, classroomId]);
+
+  const processQueue = useCallback(async () => {
+    let next: QueueItem | undefined;
+    for (const q of queue) {
+      if (q.status === "processing") return;
+      if (!next && q.status === "queued") next = q;
+    }
+    if (!next) return;
+
+    setQueue((prev) =>
+      prev.map((q) => (q.id === next.id ? { ...q, status: "processing" as const } : q))
+    );
+
+    try {
+      await processQueueItem(next);
+      setQueue((prev) => prev.filter((q) => q.id !== next.id));
+      fetchFeed();
+    } catch (e) {
+      console.error("[Peekabloom] Queue processing failed:", e);
+      setQueue((prev) =>
+        prev.map((q) => (q.id === next.id ? { ...q, status: "failed" as const } : q))
+      );
+    }
+  }, [queue, fetchFeed]);
+
+  useEffect(() => {
+    processQueue();
+  }, [processQueue]);
+
   if (classroomLoading || loading) {
     return (
       <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
@@ -821,20 +840,46 @@ export default function HomeScreen() {
   }
 
   const childMap = useMemo(() => new Map(children.map((c) => [c.id, c])), [children]);
+  const pendingCount = useMemo(() => observations.filter((o) => o.status === "pending").length, [observations]);
+
+  const feedData = useMemo<FeedItem[]>(
+    () => [
+      ...queue.map((q) => ({ ...q, _type: "placeholder" as const })),
+      ...observations.map((o) => ({ ...o, _type: "observation" as const })),
+    ],
+    [queue, observations]
+  );
 
   const renderChild = ({ item, index }: { item: Child; index: number }) => (
     <ChildCard child={item} index={index} />
   );
 
-  const renderObservation = useCallback(({ item }: { item: Observation }) => (
-    <ObservationCard
-      obs={item}
-      child={childMap.get(item.child_id)}
-      onApprove={() => handleApprove(item.id)}
-      onEdit={() => handleEdit(item)}
-      onDelete={() => handleDelete(item.id)}
-    />
-  ), [childMap, handleApprove, handleEdit, handleDelete]);
+  const renderFeedItem = useCallback(
+    ({ item }: { item: FeedItem }) => {
+      if (item._type === "placeholder") {
+        return (
+          <PlaceholderCard
+            item={item}
+            onRetry={() =>
+              setQueue((prev) =>
+                prev.map((q) => (q.id === item.id ? { ...q, status: "queued" as const } : q))
+              )
+            }
+          />
+        );
+      }
+      return (
+        <ObservationCard
+          obs={item}
+          child={childMap.get(item.child_id)}
+          onApprove={() => handleApprove(item.id)}
+          onEdit={() => handleEdit(item)}
+          onDelete={() => handleDelete(item.id)}
+        />
+      );
+    },
+    [childMap, handleApprove, handleEdit, handleDelete]
+  );
 
   return (
     <View
@@ -896,7 +941,7 @@ export default function HomeScreen() {
             ) : null}
           </View>
 
-          {observations.length === 0 ? (
+          {feedData.length === 0 ? (
             <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
               <Ionicons name="document-text-outline" size={40} color={Colors.textDark} />
               <Text style={styles.emptyTitle}>No observations yet</Text>
@@ -906,8 +951,8 @@ export default function HomeScreen() {
             </Animated.View>
           ) : (
             <FlatList
-              data={observations}
-              renderItem={renderObservation}
+              data={feedData}
+              renderItem={renderFeedItem}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.feedContent}
               showsVerticalScrollIndicator={false}
@@ -958,13 +1003,13 @@ export default function HomeScreen() {
             <VoiceRecorder
               classChildren={children}
               classroomId={classroomId!}
-              onSaved={fetchFeed}
+              onQueued={handleQueued}
             />
           ) : (
             <PhotoRecorder
               classChildren={children}
               classroomId={classroomId!}
-              onSaved={fetchFeed}
+              onQueued={handleQueued}
             />
           )}
         </View>
@@ -1356,6 +1401,50 @@ const feedStyles = StyleSheet.create({
   },
   actionBtnText: {
     fontSize: 12,
+    fontFamily: "Nunito_600SemiBold",
+    color: "#FFFFFF",
+  },
+});
+
+const placeholderStyles = StyleSheet.create({
+  card: {
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    padding: 14,
+    gap: 8,
+  },
+  cardFailed: {
+    backgroundColor: "#2D1515",
+    borderWidth: 1,
+    borderColor: "#C0392B",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  label: {
+    fontSize: 13,
+    fontFamily: "Nunito_600SemiBold",
+    color: Colors.textMuted,
+  },
+  labelFailed: {
+    color: "#E07A6B",
+  },
+  subText: {
+    fontSize: 12,
+    fontFamily: "Nunito_400Regular",
+    color: Colors.textDark,
+  },
+  retryBtn: {
+    alignSelf: "flex-start",
+    backgroundColor: "#C0392B",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  retryBtnText: {
+    fontSize: 13,
     fontFamily: "Nunito_600SemiBold",
     color: "#FFFFFF",
   },
