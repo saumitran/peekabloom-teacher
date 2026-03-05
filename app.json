@@ -18,7 +18,8 @@
       "bundleIdentifier": "com.peekabloom.teacher",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Peekabloom records audio to capture voice observations about children.",
-        "NSSpeechRecognitionUsageDescription": "Peekabloom uses speech recognition to transcribe observations in real time."
+        "NSSpeechRecognitionUsageDescription": "Peekabloom uses speech recognition to transcribe observations in real time.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -26,7 +27,11 @@
       "adaptiveIcon": {
         "backgroundColor": "#1A1A2E",
         "foregroundImage": "./assets/images/icon.png"
-      }
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -58,6 +63,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "bc49510c-1d2b-42fe-a193-5f65330d2208"
+      }
     }
   }
 }

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add app/review.tsx app/home.tsx lib/supabase.ts && git diff --staged --stat)",
+      "Bash(git commit -m \"$\\(cat <<'EOF'\nFix review screen and pending count\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push origin main)",
+      "Bash(git add app/home.tsx && git diff --staged --stat)",
+      "Bash(git add -A && git commit -m \"Simplify: XHR 2xx check and timeout\" && git push)"
+    ]
+  }
+}

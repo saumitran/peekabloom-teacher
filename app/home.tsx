@@ -395,17 +395,32 @@ function PhotoRecorder({
       console.log('[Peekabloom] photoUri:', photoUri);
       console.log('[Peekabloom] blob size:', photoBlob.size);
       console.log('[Peekabloom] blob type:', photoBlob.type);
-      const path = `photos/${Date.now()}.jpg`;
+      const path = `${Date.now()}.jpg`;
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
-      const { error: uploadError } = await supabase.storage
-        .from("photos")
-        .upload(path, photoBlob, { contentType: "image/jpeg" });
+      const uploadUrl = `${supabaseUrl}/storage/v1/object/photos/${path}`;
 
-      let publicUrl: string | null = null;
-      if (uploadError) {
-        console.error("[Peekabloom] Storage upload failed — check Supabase photos bucket RLS policy", uploadError);
-      } else {
-        publicUrl = supabase.storage.from("photos").getPublicUrl(path).data.publicUrl;
+      let photoPath: string | null = null;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', uploadUrl);
+          xhr.setRequestHeader('Authorization', `Bearer ${supabaseKey}`);
+          xhr.setRequestHeader('apikey', supabaseKey!);
+          xhr.setRequestHeader('Content-Type', 'image/jpeg');
+          xhr.timeout = 30000;
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+          };
+          xhr.onerror = () => reject(new Error('XHR error'));
+          xhr.ontimeout = () => reject(new Error('Upload timed out'));
+          xhr.send(photoBlob);
+        });
+        photoPath = path;
+      } catch (uploadErr) {
+        console.error("[Peekabloom] Storage upload failed — check Supabase photos bucket RLS policy", uploadErr);
       }
 
       // Call parsing API
@@ -430,7 +445,7 @@ function PhotoRecorder({
               transcript: finalTranscript,
               children: classChildren,
               classroom_id: classroomId,
-              photo_url: publicUrl,
+              photo_url: photoPath,
             }),
           });
           if (response.ok) {
@@ -451,7 +466,7 @@ function PhotoRecorder({
           parsed_content: obs.parsed_content,
           hdlh_tags: obs.hdlh_tags,
           elect_tags: obs.elect_tags,
-          photo_url: publicUrl,
+          photo_url: photoPath,
           status: obs.status ?? "pending",
         }));
       } else {
@@ -464,7 +479,7 @@ function PhotoRecorder({
           parsed_content: parsedContent,
           hdlh_tags: [],
           elect_tags: [],
-          photo_url: publicUrl,
+          photo_url: photoPath,
           status: "pending",
         }));
       }
