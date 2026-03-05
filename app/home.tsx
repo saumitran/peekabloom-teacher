@@ -30,6 +30,7 @@ import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
 import { supabase, type Child, type Observation } from "@/lib/supabase";
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type RecordingTab = "voice" | "photo";
 type UiState = "idle" | "recording" | "parsing" | "saved" | "error";
@@ -47,6 +48,28 @@ type QueueItem = {
 type FeedItem =
   | ({ _type: "placeholder" } & QueueItem)
   | ({ _type: "observation" } & Observation);
+
+const QUEUE_STORAGE_KEY = 'peekabloom_queue';
+
+async function saveQueueToStorage(queue: QueueItem[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+  } catch (e) {
+    console.error('[Peekabloom] Failed to save queue:', e);
+  }
+}
+
+async function loadQueueFromStorage(): Promise<QueueItem[]> {
+  try {
+    const raw = await AsyncStorage.getItem(QUEUE_STORAGE_KEY);
+    if (!raw) return [];
+    const items: QueueItem[] = JSON.parse(raw);
+    return items.map(q => q.status === 'processing' ? { ...q, status: 'queued' as const } : q);
+  } catch (e) {
+    console.error('[Peekabloom] Failed to load queue:', e);
+    return [];
+  }
+}
 
 
 function formatTimestamp(created_at: string): string {
@@ -172,9 +195,11 @@ function ObservationCard({
 function PlaceholderCard({
   item,
   onRetry,
+  isOnline,
 }: {
   item: QueueItem;
   onRetry: () => void;
+  isOnline: boolean;
 }) {
   const pulse = useRef(new RNAnimated.Value(1)).current;
   const [elapsed, setElapsed] = useState(Date.now() - item.queuedAt);
@@ -214,7 +239,7 @@ function PlaceholderCard({
           <ActivityIndicator size="small" color="#E07A6B" />
         )}
         <Text style={[placeholderStyles.label, isFailed && placeholderStyles.labelFailed]}>
-          {isFailed ? "Failed to save" : "Processing..."}
+          {isFailed ? "Failed to save" : !isOnline && item.status === "queued" ? "Waiting for connection" : "Processing..."}
         </Text>
       </View>
       {!isFailed && elapsed > 5000 ? (
@@ -714,6 +739,7 @@ export default function HomeScreen() {
   const [children, setChildren] = useState<Child[]>([]);
   const [observations, setObservations] = useState<Observation[]>([]);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [isOnline, setIsOnline] = useState(true);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
   const [editingObs, setEditingObs] = useState<Observation | null>(null);
@@ -749,8 +775,39 @@ export default function HomeScreen() {
       router.replace("/");
       return;
     }
-    Promise.all([fetchChildren(), fetchFeed()]).finally(() => setLoading(false));
+    Promise.all([
+      fetchChildren(),
+      fetchFeed(),
+      loadQueueFromStorage().then(setQueue),
+    ]).finally(() => setLoading(false));
   }, [classroomId, classroomLoading, fetchChildren, fetchFeed]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkConnection() {
+      try {
+        await fetch('https://www.google.com/generate_204', {
+          method: 'HEAD',
+          cache: 'no-cache',
+        });
+        if (!cancelled) setIsOnline(true);
+      } catch {
+        if (!cancelled) setIsOnline(false);
+      }
+    }
+
+    checkConnection();
+    const interval = setInterval(checkConnection, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    saveQueueToStorage(queue);
+  }, [queue]);
 
   const handleApprove = useCallback(async (id: string) => {
     await supabase.from("observations").update({ status: "approved" }).eq("id", id);
@@ -803,6 +860,7 @@ export default function HomeScreen() {
   }, [children, classroomId]);
 
   const processQueue = useCallback(async () => {
+    if (!isOnline) return;
     let next: QueueItem | undefined;
     for (const q of queue) {
       if (q.status === "processing") return;
@@ -824,11 +882,11 @@ export default function HomeScreen() {
         prev.map((q) => (q.id === next.id ? { ...q, status: "failed" as const } : q))
       );
     }
-  }, [queue, fetchFeed]);
+  }, [isOnline, queue, fetchFeed]);
 
   useEffect(() => {
     processQueue();
-  }, [processQueue]);
+  }, [processQueue, isOnline]);
 
   if (classroomLoading || loading) {
     return (
@@ -860,6 +918,7 @@ export default function HomeScreen() {
         return (
           <PlaceholderCard
             item={item}
+            isOnline={isOnline}
             onRetry={() =>
               setQueue((prev) =>
                 prev.map((q) => (q.id === item.id ? { ...q, status: "queued" as const } : q))
@@ -878,7 +937,7 @@ export default function HomeScreen() {
         />
       );
     },
-    [childMap, handleApprove, handleEdit, handleDelete]
+    [isOnline, childMap, handleApprove, handleEdit, handleDelete]
   );
 
   return (
