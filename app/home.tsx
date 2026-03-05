@@ -72,6 +72,10 @@ async function loadQueueFromStorage(): Promise<QueueItem[]> {
 }
 
 
+function showOfflineAlert() {
+  Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+}
+
 function formatTimestamp(created_at: string): string {
   const date = new Date(created_at);
   const now = new Date();
@@ -283,7 +287,7 @@ function VoiceRecorder({
 
   const handlePressIn = async () => {
     if (!isOnline) {
-      Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+      showOfflineAlert();
       return;
     }
     if (uiState !== "idle") return;
@@ -532,8 +536,6 @@ function PhotoRecorder({
   onQueued,
   isOnline,
 }: {
-  classChildren: Child[];
-  classroomId: string;
   onQueued: (data: { transcript: string; photoUri: string | null }) => void;
   isOnline: boolean;
 }) {
@@ -596,7 +598,7 @@ function PhotoRecorder({
 
   const handlePressIn = async () => {
     if (!isOnline) {
-      Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+      showOfflineAlert();
       return;
     }
     if (photoState !== "describing") return;
@@ -891,15 +893,6 @@ export default function HomeScreen() {
     processQueue();
   }, [processQueue, isOnline]);
 
-  if (classroomLoading || loading) {
-    return (
-      <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
-        <ActivityIndicator size="large" color={Colors.primary} />
-        <StatusBar style="light" />
-      </View>
-    );
-  }
-
   const childMap = useMemo(() => new Map(children.map((c) => [c.id, c])), [children]);
   const pendingCount = useMemo(() => observations.filter((o) => o.status === "pending").length, [observations]);
 
@@ -942,6 +935,15 @@ export default function HomeScreen() {
     },
     [isOnline, childMap, handleApprove, handleEdit, handleDelete]
   );
+
+  if (classroomLoading || loading) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <StatusBar style="light" />
+      </View>
+    );
+  }
 
   return (
     <View
@@ -1070,8 +1072,6 @@ export default function HomeScreen() {
             />
           ) : (
             <PhotoRecorder
-              classChildren={children}
-              classroomId={classroomId!}
               onQueued={handleQueued}
               isOnline={isOnline}
             />
