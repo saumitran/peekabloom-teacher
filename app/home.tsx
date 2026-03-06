@@ -49,6 +49,17 @@ type FeedItem =
   | ({ _type: "placeholder" } & QueueItem)
   | ({ _type: "observation" } & Observation);
 
+type AttendanceEvent = {
+  id: string;
+  child_id: string;
+  classroom_id: string;
+  event_type: 'checkin' | 'checkout' | 'nap_start' | 'nap_end';
+  recorded_at: string;
+  date: string;
+};
+
+type LeftTab = 'attendance' | 'nap';
+
 const QUEUE_STORAGE_KEY = 'peekabloom_queue';
 
 async function saveQueueToStorage(queue: QueueItem[]): Promise<void> {
@@ -72,6 +83,66 @@ async function loadQueueFromStorage(): Promise<QueueItem[]> {
 }
 
 
+async function fetchTodayEvents(classroomId: string): Promise<AttendanceEvent[]> {
+  const today = new Date().toISOString().split('T')[0];
+  const { data } = await supabase
+    .from('attendance_events')
+    .select('*')
+    .eq('classroom_id', classroomId)
+    .eq('date', today)
+    .order('recorded_at', { ascending: true });
+  return (data as AttendanceEvent[]) ?? [];
+}
+
+async function addEvent(
+  childId: string,
+  classroomId: string,
+  eventType: AttendanceEvent['event_type'],
+  recordedAt?: Date
+): Promise<void> {
+  const today = new Date().toISOString().split('T')[0];
+  await supabase.from('attendance_events').insert({
+    child_id: childId,
+    classroom_id: classroomId,
+    event_type: eventType,
+    recorded_at: (recordedAt ?? new Date()).toISOString(),
+    date: today,
+  });
+}
+
+function lastEventTypeFor(
+  childId: string,
+  events: AttendanceEvent[],
+  types: [AttendanceEvent['event_type'], AttendanceEvent['event_type']]
+): AttendanceEvent['event_type'] | undefined {
+  return events
+    .filter(e => e.child_id === childId && (e.event_type === types[0] || e.event_type === types[1]))
+    .sort((a, b) => (a.recorded_at < b.recorded_at ? -1 : 1))
+    .at(-1)?.event_type;
+}
+
+function isCheckedIn(childId: string, events: AttendanceEvent[]): boolean {
+  return lastEventTypeFor(childId, events, ['checkin', 'checkout']) === 'checkin';
+}
+
+function isNapping(childId: string, events: AttendanceEvent[]): boolean {
+  return lastEventTypeFor(childId, events, ['nap_start', 'nap_end']) === 'nap_start';
+}
+
+function getInitials(name: string): string {
+  const words = (name || "").trim().split(/\s+/);
+  return words.length >= 2
+    ? (words[0][0] + words[words.length - 1][0]).toUpperCase()
+    : (words[0]?.[0] || "?").toUpperCase();
+}
+
+const EVENT_TYPE_LABELS: Record<AttendanceEvent['event_type'], string> = {
+  checkin: 'Check In',
+  checkout: 'Check Out',
+  nap_start: 'Nap Start',
+  nap_end: 'Nap End',
+};
+
 function showOfflineAlert() {
   Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
 }
@@ -92,11 +163,7 @@ function formatTimestamp(created_at: string): string {
 }
 
 function ChildCard({ child, index }: { child: Child; index: number }) {
-  const words = (child.name || "").trim().split(/\s+/);
-  const initials =
-    words.length >= 2
-      ? (words[0][0] + words[words.length - 1][0]).toUpperCase()
-      : (words[0]?.[0] || "?").toUpperCase();
+  const initials = getInitials(child.name);
   const bgColors = [
     "#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B",
     "#B87BF9", "#F96BA3", "#6BF9C7", "#F9A36B",
@@ -122,6 +189,153 @@ function ChildCard({ child, index }: { child: Child; index: number }) {
         </Text>
       </TouchableOpacity>
     </Animated.View>
+  );
+}
+
+function AttendanceChildCard({
+  child,
+  index,
+  leftTab,
+  checkedIn,
+  napping,
+  onTap,
+  onLongPress,
+}: {
+  child: Child;
+  index: number;
+  leftTab: LeftTab;
+  checkedIn: boolean;
+  napping: boolean;
+  onTap: () => void;
+  onLongPress: () => void;
+}) {
+  const initials = getInitials(child.name);
+
+  let cardBg: string;
+  let textColor = "#FFFFFF";
+  let opacity = 1;
+
+  if (leftTab === 'attendance') {
+    if (checkedIn) {
+      cardBg = Colors.primary;
+    } else {
+      cardBg = "#3A3A3A";
+      textColor = Colors.textMuted;
+      opacity = 0.4;
+    }
+  } else {
+    if (!checkedIn) {
+      cardBg = "#3A3A3A";
+      textColor = Colors.textMuted;
+      opacity = 0.4;
+    } else if (napping) {
+      cardBg = "#F5A623";
+    } else {
+      cardBg = "#7BC4A0";
+    }
+  }
+
+  return (
+    <Animated.View entering={FadeInDown.duration(400).delay(index * 50)} style={{ opacity }}>
+      <TouchableOpacity
+        style={[styles.childCard, { backgroundColor: cardBg }]}
+        activeOpacity={0.75}
+        onPress={onTap}
+        onLongPress={onLongPress}
+      >
+        {leftTab === 'nap' && napping ? (
+          <View style={attendanceStyles.moonBadge}>
+            <Ionicons name="moon" size={10} color="#FFFFFF" />
+          </View>
+        ) : null}
+        <View style={[styles.childAvatar, { backgroundColor: 'rgba(255,255,255,0.25)' }]}>
+          <Text style={styles.childInitials}>{initials}</Text>
+        </View>
+        <Text style={[styles.childName, { color: textColor }]} numberOfLines={1}>
+          {child.name}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+function EventRow({
+  evt,
+  onSave,
+  onDelete,
+}: {
+  evt: AttendanceEvent;
+  onSave: (eventId: string, newTime: Date) => void;
+  onDelete: (eventId: string) => void;
+}) {
+  const toHHMM = (iso: string) => {
+    const d = new Date(iso);
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  };
+  const [timeValue, setTimeValue] = useState(() => toHHMM(evt.recorded_at));
+
+  useEffect(() => {
+    setTimeValue(toHHMM(evt.recorded_at));
+  }, [evt.recorded_at]);
+
+  return (
+    <View style={attendanceStyles.eventRow}>
+      <Text style={attendanceStyles.eventLabel}>{EVENT_TYPE_LABELS[evt.event_type]}</Text>
+      <TextInput
+        style={attendanceStyles.eventTimeInput}
+        value={timeValue}
+        onChangeText={setTimeValue}
+        onBlur={() => {
+          const parts = timeValue.split(':');
+          const h = parseInt(parts[0], 10);
+          const m = parseInt(parts[1], 10);
+          if (isNaN(h) || isNaN(m)) return;
+          const newTime = new Date(evt.recorded_at);
+          newTime.setHours(h, m, 0, 0);
+          onSave(evt.id, newTime);
+        }}
+        keyboardType="numbers-and-punctuation"
+      />
+      <TouchableOpacity style={attendanceStyles.eventDeleteBtn} onPress={() => onDelete(evt.id)}>
+        <Ionicons name="trash-outline" size={18} color={Colors.error} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function EditAttendanceModal({
+  child,
+  events,
+  onClose,
+  onSave,
+  onDelete,
+}: {
+  child: Child | null;
+  events: AttendanceEvent[];
+  onClose: () => void;
+  onSave: (eventId: string, newTime: Date) => void;
+  onDelete: (eventId: string) => void;
+}) {
+  return (
+    <Modal visible={child !== null} animationType="fade" transparent>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalBox}>
+          <Text style={styles.modalTitle}>{child?.name ?? ''} — Today's Events</Text>
+          {events.length === 0 ? (
+            <Text style={attendanceStyles.noEventsText}>No events recorded today.</Text>
+          ) : (
+            events.map((evt) => (
+              <EventRow key={evt.id} evt={evt} onSave={onSave} onDelete={onDelete} />
+            ))
+          )}
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={onClose}>
+              <Text style={styles.modalCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -746,6 +960,9 @@ export default function HomeScreen() {
   const [isOnline, setIsOnline] = useState(true);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
+  const [leftTab, setLeftTab] = useState<LeftTab>('attendance');
+  const [todayEvents, setTodayEvents] = useState<AttendanceEvent[]>([]);
+  const [editingChild, setEditingChild] = useState<Child | null>(null);
   const [editingObs, setEditingObs] = useState<Observation | null>(null);
   const [editText, setEditText] = useState("");
 
@@ -783,6 +1000,7 @@ export default function HomeScreen() {
       fetchChildren(),
       fetchFeed(),
       loadQueueFromStorage().then(setQueue),
+      fetchTodayEvents(classroomId!).then(setTodayEvents),
     ]).finally(() => setLoading(false));
   }, [classroomId, classroomLoading, fetchChildren, fetchFeed]);
 
@@ -822,6 +1040,39 @@ export default function HomeScreen() {
     await supabase.from("observations").delete().eq("id", id);
     fetchFeed();
   }, [fetchFeed]);
+
+  const refreshTodayEvents = useCallback(async () => {
+    const updated = await fetchTodayEvents(classroomId!);
+    setTodayEvents(updated);
+  }, [classroomId]);
+
+  const handleChildTap = useCallback(async (child: Child) => {
+    const checkedIn = isCheckedIn(child.id, todayEvents);
+    if (leftTab === 'attendance') {
+      await addEvent(child.id, classroomId!, checkedIn ? 'checkout' : 'checkin');
+    } else {
+      if (!checkedIn) return;
+      const napping = isNapping(child.id, todayEvents);
+      await addEvent(child.id, classroomId!, napping ? 'nap_end' : 'nap_start');
+    }
+    await refreshTodayEvents();
+  }, [leftTab, todayEvents, classroomId, refreshTodayEvents]);
+
+  const handleSaveEventTime = useCallback(async (eventId: string, newTime: Date) => {
+    await supabase
+      .from('attendance_events')
+      .update({ recorded_at: newTime.toISOString() })
+      .eq('id', eventId);
+    await refreshTodayEvents();
+  }, [refreshTodayEvents]);
+
+  const handleDeleteEvent = useCallback(async (eventId: string) => {
+    await supabase
+      .from('attendance_events')
+      .delete()
+      .eq('id', eventId);
+    await refreshTodayEvents();
+  }, [refreshTodayEvents]);
 
   const handleEdit = useCallback((obs: Observation) => {
     setEditingObs(obs);
@@ -885,6 +1136,24 @@ export default function HomeScreen() {
 
   const childMap = useMemo(() => new Map(children.map((c) => [c.id, c])), [children]);
   const pendingCount = useMemo(() => observations.filter((o) => o.status === "pending").length, [observations]);
+  const attendanceStatusMap = useMemo(() => {
+    const map = new Map<string, { checkedIn: boolean; napping: boolean }>();
+    for (const child of children) {
+      map.set(child.id, {
+        checkedIn: isCheckedIn(child.id, todayEvents),
+        napping: isNapping(child.id, todayEvents),
+      });
+    }
+    return map;
+  }, [children, todayEvents]);
+  const editingChildEvents = useMemo(() =>
+    editingChild
+      ? todayEvents
+          .filter(e => e.child_id === editingChild.id)
+          .sort((a, b) => (a.recorded_at < b.recorded_at ? -1 : 1))
+      : [],
+    [editingChild, todayEvents]
+  );
 
   const feedData = useMemo<FeedItem[]>(
     () => [
@@ -894,9 +1163,20 @@ export default function HomeScreen() {
     [queue, observations]
   );
 
-  const renderChild = ({ item, index }: { item: Child; index: number }) => (
-    <ChildCard child={item} index={index} />
-  );
+  const renderChild = useCallback(({ item, index }: { item: Child; index: number }) => {
+    const status = attendanceStatusMap.get(item.id) ?? { checkedIn: false, napping: false };
+    return (
+      <AttendanceChildCard
+        child={item}
+        index={index}
+        leftTab={leftTab}
+        checkedIn={status.checkedIn}
+        napping={status.napping}
+        onTap={() => handleChildTap(item)}
+        onLongPress={() => setEditingChild(item)}
+      />
+    );
+  }, [leftTab, attendanceStatusMap, handleChildTap]);
 
   const renderFeedItem = useCallback(
     ({ item }: { item: FeedItem }) => {
@@ -945,7 +1225,7 @@ export default function HomeScreen() {
       <StatusBar style="light" />
 
       <View style={styles.panels}>
-        {/* LEFT PANEL — children grid */}
+        {/* LEFT PANEL — attendance / nap */}
         <View style={styles.leftPanel}>
           <View style={styles.leftHeader}>
             <View style={styles.leftHeaderTitle}>
@@ -963,6 +1243,27 @@ export default function HomeScreen() {
               }}
             >
               <Ionicons name="log-out-outline" size={20} color={Colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <View style={attendanceStyles.leftTabRow}>
+            <TouchableOpacity
+              style={[attendanceStyles.leftTab, leftTab === 'attendance' && attendanceStyles.leftTabActive]}
+              activeOpacity={0.75}
+              onPress={() => setLeftTab('attendance')}
+            >
+              <Text style={[attendanceStyles.leftTabText, leftTab === 'attendance' && attendanceStyles.leftTabTextActive]}>
+                Attendance
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[attendanceStyles.leftTab, leftTab === 'nap' && attendanceStyles.leftTabActive]}
+              activeOpacity={0.75}
+              onPress={() => setLeftTab('nap')}
+            >
+              <Text style={[attendanceStyles.leftTabText, leftTab === 'nap' && attendanceStyles.leftTabTextActive]}>
+                Nap
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -1068,6 +1369,14 @@ export default function HomeScreen() {
           )}
         </View>
       </View>
+
+      <EditAttendanceModal
+        child={editingChild}
+        events={editingChildEvents}
+        onClose={() => setEditingChild(null)}
+        onSave={handleSaveEventTime}
+        onDelete={handleDeleteEvent}
+      />
 
       {/* Edit modal */}
       <Modal visible={!!editingObs} animationType="fade" transparent>
@@ -1365,6 +1674,74 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: "Nunito_700Bold",
     color: "#FFFFFF",
+  },
+});
+
+const attendanceStyles = StyleSheet.create({
+  leftTabRow: {
+    flexDirection: 'row',
+    marginHorizontal: 10,
+    marginBottom: 10,
+    backgroundColor: Colors.background,
+    borderRadius: 10,
+    padding: 3,
+  },
+  leftTab: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  leftTabActive: {
+    backgroundColor: Colors.primary,
+  },
+  leftTabText: {
+    fontSize: 12,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.textMuted,
+  },
+  leftTabTextActive: {
+    color: '#FFFFFF',
+  },
+  moonBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    zIndex: 1,
+  },
+  eventRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  eventLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.text,
+  },
+  eventTimeInput: {
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 14,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.text,
+    width: 64,
+    textAlign: 'center',
+  },
+  eventDeleteBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  noEventsText: {
+    fontSize: 14,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.textMuted,
   },
 });
 
