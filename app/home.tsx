@@ -28,7 +28,7 @@ import {
 } from "@/lib/speechRecognition";
 import Colors from "@/constants/colors";
 import { useClassroom } from "@/lib/classroom";
-import { supabase, type Child, type Observation } from "@/lib/supabase";
+import { supabase, type Child, type Observation, type AttendanceEvent } from "@/lib/supabase";
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -49,18 +49,13 @@ type FeedItem =
   | ({ _type: "placeholder" } & QueueItem)
   | ({ _type: "observation" } & Observation);
 
-type AttendanceEvent = {
-  id: string;
-  child_id: string;
-  classroom_id: string;
-  event_type: 'checkin' | 'checkout' | 'nap_start' | 'nap_end';
-  recorded_at: string;
-  date: string;
-};
-
 type LeftTab = 'attendance' | 'nap';
 
 const QUEUE_STORAGE_KEY = 'peekabloom_queue';
+
+function getTodayISO(): string {
+  return new Date().toISOString().split('T')[0];
+}
 
 async function saveQueueToStorage(queue: QueueItem[]): Promise<void> {
   try {
@@ -84,7 +79,7 @@ async function loadQueueFromStorage(): Promise<QueueItem[]> {
 
 
 async function fetchTodayEvents(classroomId: string): Promise<AttendanceEvent[]> {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayISO();
   const { data } = await supabase
     .from('attendance_events')
     .select('*')
@@ -100,7 +95,7 @@ async function addEvent(
   eventType: AttendanceEvent['event_type'],
   recordedAt?: Date
 ): Promise<void> {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayISO();
   await supabase.from('attendance_events').insert({
     child_id: childId,
     classroom_id: classroomId,
@@ -145,6 +140,11 @@ const EVENT_TYPE_LABELS: Record<AttendanceEvent['event_type'], string> = {
 
 function showOfflineAlert() {
   Alert.alert('WiFi Required', 'Please connect to WiFi to record updates.');
+}
+
+function toHHMM(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
 function formatTimestamp(created_at: string): string {
@@ -268,10 +268,6 @@ function EventRow({
   onSave: (eventId: string, newTime: Date) => void;
   onDelete: (eventId: string) => void;
 }) {
-  const toHHMM = (iso: string) => {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  };
   const [timeValue, setTimeValue] = useState(() => toHHMM(evt.recorded_at));
 
   useEffect(() => {
@@ -1042,21 +1038,37 @@ export default function HomeScreen() {
   }, [fetchFeed]);
 
   const refreshTodayEvents = useCallback(async () => {
-    const updated = await fetchTodayEvents(classroomId!);
-    setTodayEvents(updated);
+    setTodayEvents(await fetchTodayEvents(classroomId!));
   }, [classroomId]);
 
+  const attendanceStatusMap = useMemo(() => {
+    const byChild = new Map<string, AttendanceEvent[]>();
+    for (const e of todayEvents) {
+      const arr = byChild.get(e.child_id);
+      if (arr) arr.push(e);
+      else byChild.set(e.child_id, [e]);
+    }
+    const map = new Map<string, { checkedIn: boolean; napping: boolean }>();
+    for (const child of children) {
+      const evts = byChild.get(child.id) ?? [];
+      map.set(child.id, {
+        checkedIn: isCheckedIn(child.id, evts),
+        napping: isNapping(child.id, evts),
+      });
+    }
+    return map;
+  }, [children, todayEvents]);
+
   const handleChildTap = useCallback(async (child: Child) => {
-    const checkedIn = isCheckedIn(child.id, todayEvents);
+    const { checkedIn, napping } = attendanceStatusMap.get(child.id) ?? { checkedIn: false, napping: false };
     if (leftTab === 'attendance') {
       await addEvent(child.id, classroomId!, checkedIn ? 'checkout' : 'checkin');
     } else {
       if (!checkedIn) return;
-      const napping = isNapping(child.id, todayEvents);
       await addEvent(child.id, classroomId!, napping ? 'nap_end' : 'nap_start');
     }
     await refreshTodayEvents();
-  }, [leftTab, todayEvents, classroomId, refreshTodayEvents]);
+  }, [leftTab, attendanceStatusMap, classroomId, refreshTodayEvents]);
 
   const handleSaveEventTime = useCallback(async (eventId: string, newTime: Date) => {
     await supabase
@@ -1136,16 +1148,6 @@ export default function HomeScreen() {
 
   const childMap = useMemo(() => new Map(children.map((c) => [c.id, c])), [children]);
   const pendingCount = useMemo(() => observations.filter((o) => o.status === "pending").length, [observations]);
-  const attendanceStatusMap = useMemo(() => {
-    const map = new Map<string, { checkedIn: boolean; napping: boolean }>();
-    for (const child of children) {
-      map.set(child.id, {
-        checkedIn: isCheckedIn(child.id, todayEvents),
-        napping: isNapping(child.id, todayEvents),
-      });
-    }
-    return map;
-  }, [children, todayEvents]);
   const editingChildEvents = useMemo(() =>
     editingChild
       ? todayEvents

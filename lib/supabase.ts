@@ -29,3 +29,12 @@ export interface Observation {
   status: "pending" | "approved" | "rejected";
   created_at: string;
 }
+
+export interface AttendanceEvent {
+  id: string;
+  child_id: string;
+  classroom_id: string;
+  event_type: "checkin" | "checkout" | "nap_start" | "nap_end";
+  recorded_at: string;
+  date: string;
+}
