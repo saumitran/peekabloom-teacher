@@ -513,17 +513,7 @@ async function processQueueItem(item: QueueItem): Promise<void> {
       status: obs.status ?? "pending",
     }));
   } else {
-    const parsedContent = item.transcript || "📸 Photo update";
-    rows = item.classChildren.map((child) => ({
-      child_id: child.id,
-      classroom_id: item.classroomId,
-      raw_transcript: item.transcript,
-      parsed_content: parsedContent,
-      hdlh_tags: [],
-      elect_tags: [],
-      photo_url: photoPath,
-      status: "pending",
-    }));
+    throw new Error('API returned no observations — names not recognized');
   }
 
   const { error: saveError } = await supabase.from("observations").insert(rows);
