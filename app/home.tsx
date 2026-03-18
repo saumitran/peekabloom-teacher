@@ -368,29 +368,31 @@ function ObservationCard({
   const hdlhTags = Array.isArray(obs.hdlh_tags) ? obs.hdlh_tags : [];
   const electTags = Array.isArray(obs.elect_tags) ? obs.elect_tags : [];
 
-  const isIncident = obs.record_type === "incident";
-  const isHealth = obs.record_type === "health";
-  const recordBorderStyle = isIncident
-    ? { borderLeftWidth: 3, borderLeftColor: "#E74C3C" }
-    : isHealth
-    ? { borderLeftWidth: 3, borderLeftColor: "#F5A623" }
-    : undefined;
-  const badgeLabel = isIncident ? "Incident" : isHealth ? "Health" : null;
-  const badgeBg = isIncident ? "#E74C3C" : "#F5A623";
+  const recordTypeConfig = useMemo(() =>
+    obs.record_type === "incident"
+      ? { borderColor: "#E74C3C", badgeLabel: "Incident" }
+      : obs.record_type === "health"
+      ? { borderColor: "#F5A623", badgeLabel: "Health" }
+      : null,
+  [obs.record_type]);
 
-  const structuredFields = (() => {
+  const recordBorderStyle = recordTypeConfig
+    ? { borderLeftWidth: 3, borderLeftColor: recordTypeConfig.borderColor }
+    : undefined;
+
+  const structuredFields = useMemo(() => {
     if (!obs.structured_fields) return null;
     if (typeof obs.structured_fields === 'string') {
       try { return JSON.parse(obs.structured_fields); } catch { return null; }
     }
     return obs.structured_fields;
-  })();
+  }, [obs.structured_fields]);
 
   return (
     <View style={[feedStyles.card, isPending && feedStyles.cardPending, recordBorderStyle]}>
-      {badgeLabel ? (
-        <View style={[feedStyles.recordBadge, { backgroundColor: badgeBg }]}>
-          <Text style={feedStyles.recordBadgeText}>{badgeLabel}</Text>
+      {recordTypeConfig ? (
+        <View style={[feedStyles.recordBadge, { backgroundColor: recordTypeConfig.borderColor }]}>
+          <Text style={feedStyles.recordBadgeText}>{recordTypeConfig.badgeLabel}</Text>
         </View>
       ) : null}
       <View style={feedStyles.cardHeader}>
@@ -398,7 +400,7 @@ function ObservationCard({
         <Text style={feedStyles.cardTimestamp}>{formatTimestamp(obs.created_at)}</Text>
       </View>
       <Text style={feedStyles.cardContent}>{obs.parsed_content}</Text>
-      {(isIncident || isHealth) && structuredFields ? (
+      {recordTypeConfig && structuredFields ? (
         <View style={feedStyles.structuredBox}>
           {structuredFields.time_of_incident != null ? (
             <View style={feedStyles.structuredRow}>
