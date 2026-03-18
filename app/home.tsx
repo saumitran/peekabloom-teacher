@@ -368,13 +368,70 @@ function ObservationCard({
   const hdlhTags = Array.isArray(obs.hdlh_tags) ? obs.hdlh_tags : [];
   const electTags = Array.isArray(obs.elect_tags) ? obs.elect_tags : [];
 
+  const isIncident = obs.record_type === "incident";
+  const isHealth = obs.record_type === "health";
+  const recordBorderStyle = isIncident
+    ? { borderLeftWidth: 3, borderLeftColor: "#E74C3C" }
+    : isHealth
+    ? { borderLeftWidth: 3, borderLeftColor: "#F5A623" }
+    : undefined;
+  const badgeLabel = isIncident ? "Incident" : isHealth ? "Health" : null;
+  const badgeBg = isIncident ? "#E74C3C" : "#F5A623";
+
+  const structuredFields = (() => {
+    if (!obs.structured_fields) return null;
+    if (typeof obs.structured_fields === 'string') {
+      try { return JSON.parse(obs.structured_fields); } catch { return null; }
+    }
+    return obs.structured_fields;
+  })();
+
   return (
-    <View style={[feedStyles.card, isPending && feedStyles.cardPending]}>
+    <View style={[feedStyles.card, isPending && feedStyles.cardPending, recordBorderStyle]}>
+      {badgeLabel ? (
+        <View style={[feedStyles.recordBadge, { backgroundColor: badgeBg }]}>
+          <Text style={feedStyles.recordBadgeText}>{badgeLabel}</Text>
+        </View>
+      ) : null}
       <View style={feedStyles.cardHeader}>
         <Text style={feedStyles.cardChildName}>{child?.name ?? "Unknown"}</Text>
         <Text style={feedStyles.cardTimestamp}>{formatTimestamp(obs.created_at)}</Text>
       </View>
       <Text style={feedStyles.cardContent}>{obs.parsed_content}</Text>
+      {(isIncident || isHealth) && structuredFields ? (
+        <View style={feedStyles.structuredBox}>
+          {structuredFields.time_of_incident != null ? (
+            <View style={feedStyles.structuredRow}>
+              <Text style={feedStyles.structuredLabel}>Time:</Text>
+              <Text style={feedStyles.structuredValue}>{structuredFields.time_of_incident}</Text>
+            </View>
+          ) : null}
+          {structuredFields.location != null ? (
+            <View style={feedStyles.structuredRow}>
+              <Text style={feedStyles.structuredLabel}>Location:</Text>
+              <Text style={feedStyles.structuredValue}>{structuredFields.location}</Text>
+            </View>
+          ) : null}
+          {structuredFields.what_happened != null ? (
+            <View style={feedStyles.structuredRow}>
+              <Text style={feedStyles.structuredLabel}>What happened:</Text>
+              <Text style={feedStyles.structuredValue}>{structuredFields.what_happened}</Text>
+            </View>
+          ) : null}
+          {structuredFields.action_taken != null ? (
+            <View style={feedStyles.structuredRow}>
+              <Text style={feedStyles.structuredLabel}>Action taken:</Text>
+              <Text style={feedStyles.structuredValue}>{structuredFields.action_taken}</Text>
+            </View>
+          ) : null}
+          {structuredFields.parent_notified != null ? (
+            <View style={feedStyles.structuredRow}>
+              <Text style={feedStyles.structuredLabel}>Parents notified:</Text>
+              <Text style={feedStyles.structuredValue}>{structuredFields.parent_notified ? "Yes" : "No"}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
       {photoUri ? (
         <Image source={{ uri: photoUri }} style={feedStyles.cardPhoto} resizeMode="cover" />
       ) : null}
@@ -651,6 +708,9 @@ type ParsedObsRow = {
   elect_tags: unknown;
   photo_url: string | null;
   status: string;
+  record_type?: string;
+  needs_director_review?: boolean;
+  structured_fields?: unknown;
 };
 
 async function processQueueItem(item: QueueItem): Promise<void> {
@@ -694,7 +754,7 @@ async function processQueueItem(item: QueueItem): Promise<void> {
   let apiObservations: ParsedObsRow[] = [];
 
   if (item.transcript) {
-    const parseResponse = await fetch(parseUrl!, {
+    const parseResponse = await fetch(`${parseUrl}/api/parse`, {
       method: "POST",
       headers: { Authorization: `Bearer ${parseKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -721,6 +781,9 @@ async function processQueueItem(item: QueueItem): Promise<void> {
       elect_tags: obs.elect_tags,
       photo_url: photoPath,
       status: obs.status ?? "pending",
+      record_type: obs.record_type ?? "observation",
+      needs_director_review: obs.needs_director_review ?? false,
+      structured_fields: obs.structured_fields ?? null,
     }));
   } else {
     throw new Error('API returned no observations — names not recognized');
@@ -979,7 +1042,7 @@ export default function HomeScreen() {
     if (!classroomId) return;
     const { data } = await supabase
       .from("observations")
-      .select("id, child_id, classroom_id, parsed_content, hdlh_tags, elect_tags, photo_url, status, created_at")
+      .select("id, child_id, classroom_id, parsed_content, hdlh_tags, elect_tags, photo_url, status, created_at, record_type, needs_director_review, structured_fields")
       .eq("classroom_id", classroomId)
       .order("created_at", { ascending: false });
     if (data) {
@@ -1835,6 +1898,40 @@ const feedStyles = StyleSheet.create({
   actionBtnText: {
     fontSize: 12,
     fontFamily: "Nunito_600SemiBold",
+    color: "#FFFFFF",
+  },
+  structuredBox: {
+    backgroundColor: Colors.surface,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
+  structuredRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 4,
+  },
+  structuredLabel: {
+    fontSize: 11,
+    fontWeight: "bold",
+    color: Colors.textMuted,
+  },
+  structuredValue: {
+    fontSize: 12,
+    color: Colors.textDark,
+    flexShrink: 1,
+  },
+  recordBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    borderRadius: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  recordBadgeText: {
+    fontSize: 10,
+    fontWeight: "bold",
     color: "#FFFFFF",
   },
 });

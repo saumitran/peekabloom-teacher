@@ -28,6 +28,15 @@ export interface Observation {
   photo_url: string | null;
   status: "pending" | "approved" | "rejected";
   created_at: string;
+  record_type?: string;
+  needs_director_review?: boolean;
+  structured_fields?: {
+    time_of_incident?: string | null;
+    location?: string | null;
+    what_happened?: string | null;
+    action_taken?: string | null;
+    parent_notified?: boolean | null;
+  } | null;
 }
 
 export interface AttendanceEvent {
