@@ -50,6 +50,7 @@ type FeedItem =
   | ({ _type: "observation" } & Observation);
 
 type LeftTab = 'attendance' | 'nap';
+type MainTab = 'today' | 'children' | 'plan';
 
 const QUEUE_STORAGE_KEY = 'peekabloom_queue';
 
@@ -1020,6 +1021,7 @@ export default function HomeScreen() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [isOnline, setIsOnline] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [activeMainTab, setActiveMainTab] = useState<MainTab>('today');
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
   const [leftTab, setLeftTab] = useState<LeftTab>('attendance');
   const [todayEvents, setTodayEvents] = useState<AttendanceEvent[]>([]);
@@ -1291,49 +1293,223 @@ export default function HomeScreen() {
     >
       <StatusBar style="light" />
 
-      <View style={styles.panels}>
-        {/* LEFT PANEL — attendance / nap */}
-        <View style={styles.leftPanel}>
-          <View style={styles.leftHeader}>
-            <View style={styles.leftHeaderTitle}>
-              <View style={styles.classroomDot} />
-              <Text style={styles.classroomName} numberOfLines={1}>
-                {classroomName || "Classroom"}
-              </Text>
+      {/* MAIN TAB BAR */}
+      <View style={mainTabStyles.tabBar}>
+        <TouchableOpacity
+          style={[mainTabStyles.tab, activeMainTab === 'today' && mainTabStyles.tabActive]}
+          activeOpacity={0.75}
+          onPress={() => setActiveMainTab('today')}
+        >
+          <Ionicons name="today-outline" size={20} color={activeMainTab === 'today' ? Colors.primary : Colors.textMuted} />
+          <Text style={[mainTabStyles.tabText, activeMainTab === 'today' && mainTabStyles.tabTextActive]}>Today</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[mainTabStyles.tab, activeMainTab === 'children' && mainTabStyles.tabActive]}
+          activeOpacity={0.75}
+          onPress={() => setActiveMainTab('children')}
+        >
+          <Ionicons name="people-outline" size={20} color={activeMainTab === 'children' ? Colors.primary : Colors.textMuted} />
+          <Text style={[mainTabStyles.tabText, activeMainTab === 'children' && mainTabStyles.tabTextActive]}>Children</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[mainTabStyles.tab, activeMainTab === 'plan' && mainTabStyles.tabActive]}
+          activeOpacity={0.75}
+          onPress={() => setActiveMainTab('plan')}
+        >
+          <Ionicons name="calendar-outline" size={20} color={activeMainTab === 'plan' ? Colors.primary : Colors.textMuted} />
+          <Text style={[mainTabStyles.tabText, activeMainTab === 'plan' && mainTabStyles.tabTextActive]}>Plan</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* TODAY TAB */}
+      {activeMainTab === 'today' && (
+        <>
+          <View style={styles.panels}>
+            {/* LEFT PANEL — attendance / nap */}
+            <View style={styles.leftPanel}>
+              <View style={styles.leftHeader}>
+                <View style={styles.leftHeaderTitle}>
+                  <View style={styles.classroomDot} />
+                  <Text style={styles.classroomName} numberOfLines={1}>
+                    {classroomName || "Classroom"}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.logoutBtn}
+                  activeOpacity={0.6}
+                  onPress={async () => {
+                    await clearClassroom();
+                    router.replace("/");
+                  }}
+                >
+                  <Ionicons name="log-out-outline" size={20} color={Colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={attendanceStyles.leftTabRow}>
+                <TouchableOpacity
+                  style={[attendanceStyles.leftTab, leftTab === 'attendance' && attendanceStyles.leftTabActive]}
+                  activeOpacity={0.75}
+                  onPress={() => setLeftTab('attendance')}
+                >
+                  <Text style={[attendanceStyles.leftTabText, leftTab === 'attendance' && attendanceStyles.leftTabTextActive]}>
+                    Attendance
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[attendanceStyles.leftTab, leftTab === 'nap' && attendanceStyles.leftTabActive]}
+                  activeOpacity={0.75}
+                  onPress={() => setLeftTab('nap')}
+                >
+                  <Text style={[attendanceStyles.leftTabText, leftTab === 'nap' && attendanceStyles.leftTabTextActive]}>
+                    Nap
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {children.length === 0 ? (
+                <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
+                  <Ionicons name="people-outline" size={40} color={Colors.textDark} />
+                  <Text style={styles.emptyTitle}>No children yet</Text>
+                </Animated.View>
+              ) : (
+                <FlatList
+                  data={children}
+                  renderItem={renderChild}
+                  keyExtractor={(item) => item.id}
+                  numColumns={2}
+                  columnWrapperStyle={styles.gridRow}
+                  contentContainerStyle={styles.gridContent}
+                  showsVerticalScrollIndicator={false}
+                />
+              )}
             </View>
-            <TouchableOpacity
-              style={styles.logoutBtn}
-              activeOpacity={0.6}
-              onPress={async () => {
-                await clearClassroom();
-                router.replace("/");
-              }}
-            >
-              <Ionicons name="log-out-outline" size={20} color={Colors.textMuted} />
-            </TouchableOpacity>
+
+            {/* MIDDLE PANEL — classroom feed */}
+            <View style={styles.middlePanel}>
+              <View style={styles.feedHeader}>
+                <Text style={styles.feedTitle}>Classroom Feed</Text>
+                {pendingCount > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{pendingCount}</Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {feedData.length === 0 ? (
+                <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
+                  <Ionicons name="document-text-outline" size={40} color={Colors.textDark} />
+                  <Text style={styles.emptyTitle}>No observations yet</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Observations will appear here after recording
+                  </Text>
+                </Animated.View>
+              ) : (
+                <FlatList
+                  data={feedData}
+                  renderItem={renderFeedItem}
+                  keyExtractor={(item) => item.id}
+                  contentContainerStyle={styles.feedContent}
+                  showsVerticalScrollIndicator={false}
+                />
+              )}
+            </View>
+
+            {/* RIGHT PANEL — composer */}
+            <View style={styles.rightPanel}>
+              <View style={styles.tabRow}>
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === "voice" && styles.tabActive]}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    setActiveTab("voice");
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                >
+                  <Ionicons
+                    name="mic"
+                    size={18}
+                    color={activeTab === "voice" ? Colors.text : Colors.textMuted}
+                  />
+                  <Text style={[styles.tabText, activeTab === "voice" && styles.tabTextActive]}>
+                    Voice
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === "photo" && styles.tabActive]}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    setActiveTab("photo");
+                    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                >
+                  <Ionicons
+                    name="camera"
+                    size={18}
+                    color={activeTab === "photo" ? Colors.text : Colors.textMuted}
+                  />
+                  <Text style={[styles.tabText, activeTab === "photo" && styles.tabTextActive]}>
+                    Photo
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {activeTab === "voice" ? (
+                <VoiceRecorder
+                  classChildren={children}
+                  classroomId={classroomId!}
+                  onQueued={handleQueued}
+                  isOnline={isOnline}
+                />
+              ) : (
+                <PhotoRecorder
+                  onQueued={handleQueued}
+                  isOnline={isOnline}
+                />
+              )}
+            </View>
           </View>
 
-          <View style={attendanceStyles.leftTabRow}>
-            <TouchableOpacity
-              style={[attendanceStyles.leftTab, leftTab === 'attendance' && attendanceStyles.leftTabActive]}
-              activeOpacity={0.75}
-              onPress={() => setLeftTab('attendance')}
-            >
-              <Text style={[attendanceStyles.leftTabText, leftTab === 'attendance' && attendanceStyles.leftTabTextActive]}>
-                Attendance
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[attendanceStyles.leftTab, leftTab === 'nap' && attendanceStyles.leftTabActive]}
-              activeOpacity={0.75}
-              onPress={() => setLeftTab('nap')}
-            >
-              <Text style={[attendanceStyles.leftTabText, leftTab === 'nap' && attendanceStyles.leftTabTextActive]}>
-                Nap
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <EditAttendanceModal
+            child={editingChild}
+            events={editingChildEvents}
+            onClose={() => setEditingChild(null)}
+            onSave={handleSaveEventTime}
+            onDelete={handleDeleteEvent}
+          />
 
+          <Modal visible={!!editingObs} animationType="fade" transparent>
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalBox}>
+                <Text style={styles.modalTitle}>Edit Observation</Text>
+                <TextInput
+                  style={styles.modalInput}
+                  value={editText}
+                  onChangeText={setEditText}
+                  multiline
+                  autoFocus
+                />
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={styles.modalCancelBtn}
+                    onPress={() => setEditingObs(null)}
+                  >
+                    <Text style={styles.modalCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveEdit}>
+                    <Text style={styles.modalSaveText}>Save</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        </>
+      )}
+
+      {/* CHILDREN TAB */}
+      {activeMainTab === 'children' && (
+        <View style={mainTabStyles.screen}>
+          <Text style={mainTabStyles.screenTitle}>Children</Text>
           {children.length === 0 ? (
             <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
               <Ionicons name="people-outline" size={40} color={Colors.textDark} />
@@ -1342,135 +1518,35 @@ export default function HomeScreen() {
           ) : (
             <FlatList
               data={children}
-              renderItem={renderChild}
+              renderItem={({ item, index }) => (
+                <TouchableOpacity
+                  style={mainTabStyles.childCardWrapper}
+                  activeOpacity={0.75}
+                  onPress={() => console.log(item.id)}
+                >
+                  <ChildCard child={item} index={index} />
+                </TouchableOpacity>
+              )}
               keyExtractor={(item) => item.id}
               numColumns={2}
-              columnWrapperStyle={styles.gridRow}
-              contentContainerStyle={styles.gridContent}
+              columnWrapperStyle={mainTabStyles.childrenGridRow}
+              contentContainerStyle={mainTabStyles.childrenGridContent}
               showsVerticalScrollIndicator={false}
             />
           )}
         </View>
+      )}
 
-        {/* MIDDLE PANEL — classroom feed */}
-        <View style={styles.middlePanel}>
-          <View style={styles.feedHeader}>
-            <Text style={styles.feedTitle}>Classroom Feed</Text>
-            {pendingCount > 0 ? (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{pendingCount}</Text>
-              </View>
-            ) : null}
-          </View>
-
-          {feedData.length === 0 ? (
-            <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
-              <Ionicons name="document-text-outline" size={40} color={Colors.textDark} />
-              <Text style={styles.emptyTitle}>No observations yet</Text>
-              <Text style={styles.emptySubtitle}>
-                Observations will appear here after recording
-              </Text>
-            </Animated.View>
-          ) : (
-            <FlatList
-              data={feedData}
-              renderItem={renderFeedItem}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.feedContent}
-              showsVerticalScrollIndicator={false}
-            />
-          )}
-        </View>
-
-        {/* RIGHT PANEL — composer */}
-        <View style={styles.rightPanel}>
-          <View style={styles.tabRow}>
-            <TouchableOpacity
-              style={[styles.tab, activeTab === "voice" && styles.tabActive]}
-              activeOpacity={0.75}
-              onPress={() => {
-                setActiveTab("voice");
-                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-            >
-              <Ionicons
-                name="mic"
-                size={18}
-                color={activeTab === "voice" ? Colors.text : Colors.textMuted}
-              />
-              <Text style={[styles.tabText, activeTab === "voice" && styles.tabTextActive]}>
-                Voice
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.tab, activeTab === "photo" && styles.tabActive]}
-              activeOpacity={0.75}
-              onPress={() => {
-                setActiveTab("photo");
-                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-            >
-              <Ionicons
-                name="camera"
-                size={18}
-                color={activeTab === "photo" ? Colors.text : Colors.textMuted}
-              />
-              <Text style={[styles.tabText, activeTab === "photo" && styles.tabTextActive]}>
-                Photo
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {activeTab === "voice" ? (
-            <VoiceRecorder
-              classChildren={children}
-              classroomId={classroomId!}
-              onQueued={handleQueued}
-              isOnline={isOnline}
-            />
-          ) : (
-            <PhotoRecorder
-              onQueued={handleQueued}
-              isOnline={isOnline}
-            />
-          )}
-        </View>
-      </View>
-
-      <EditAttendanceModal
-        child={editingChild}
-        events={editingChildEvents}
-        onClose={() => setEditingChild(null)}
-        onSave={handleSaveEventTime}
-        onDelete={handleDeleteEvent}
-      />
-
-      {/* Edit modal */}
-      <Modal visible={!!editingObs} animationType="fade" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Edit Observation</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={editText}
-              onChangeText={setEditText}
-              multiline
-              autoFocus
-            />
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setEditingObs(null)}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSaveBtn} onPress={handleSaveEdit}>
-                <Text style={styles.modalSaveText}>Save</Text>
-              </TouchableOpacity>
-            </View>
+      {/* PLAN TAB */}
+      {activeMainTab === 'plan' && (
+        <View style={mainTabStyles.screen}>
+          <Text style={mainTabStyles.screenTitle}>Plan</Text>
+          <View style={mainTabStyles.planPlaceholder}>
+            <Ionicons name="calendar-outline" size={48} color={Colors.textDark} />
+            <Text style={mainTabStyles.planPlaceholderText}>Weekly planning coming soon</Text>
           </View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -2060,5 +2136,70 @@ const cameraStyles = StyleSheet.create({
     fontSize: 16,
     fontFamily: "Nunito_700Bold",
     color: "#FFFFFF",
+  },
+});
+
+const mainTabStyles = StyleSheet.create({
+  tabBar: {
+    flexDirection: "row",
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingHorizontal: 8,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+  tabActive: {
+    borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    fontSize: 14,
+    fontFamily: "Nunito_600SemiBold",
+    color: Colors.textMuted,
+  },
+  tabTextActive: {
+    color: Colors.primary,
+  },
+  screen: {
+    flex: 1,
+  },
+  screenTitle: {
+    fontSize: 22,
+    fontFamily: "Nunito_700Bold",
+    color: Colors.text,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  childrenGridRow: {
+    gap: 12,
+    paddingHorizontal: 16,
+  },
+  childrenGridContent: {
+    padding: 16,
+    gap: 12,
+  },
+  childCardWrapper: {
+    flex: 1,
+  },
+  planPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 16,
+  },
+  planPlaceholderText: {
+    fontSize: 16,
+    fontFamily: "Nunito_600SemiBold",
+    color: Colors.textMuted,
   },
 });
