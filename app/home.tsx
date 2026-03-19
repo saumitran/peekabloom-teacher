@@ -54,6 +54,19 @@ type LeftTab = 'attendance' | 'nap';
 type MainTab = 'today' | 'children' | 'plan';
 type ProfileWindow = '7d' | '28d';
 type SnapshotState = 'idle' | 'loading' | 'done';
+type PlanCardStatus = 'planned' | 'done' | 'skipped';
+type PlanGenerateState = 'idle' | 'loading' | 'error' | 'done';
+
+type PlanCard = {
+  id: string;
+  title: string;
+  description: string;
+  day: string;
+  timeOfDay: string;
+  hdlhTag: string;
+  status: PlanCardStatus;
+  rationale: string;
+};
 
 const CHILD_BG_COLORS = [
   "#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B",
@@ -1217,6 +1230,227 @@ function ChildProfileModal({ child, classroomId, onClose }: {
   );
 }
 
+// ── PlanCardView ──────────────────────────────────────────────────────────────
+
+const STATUS_LABELS: Record<PlanCardStatus, string> = {
+  planned: 'Planned',
+  done: 'Done',
+  skipped: 'Skipped',
+};
+const STATUS_NEXT: Record<PlanCardStatus, PlanCardStatus> = {
+  planned: 'done',
+  done: 'skipped',
+  skipped: 'planned',
+};
+
+function PlanCardView({
+  card,
+  onStatusCycle,
+  onDismiss,
+}: {
+  card: PlanCard;
+  onStatusCycle: (id: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <View style={planStyles.card}>
+      <View style={planStyles.cardHeader}>
+        <Text style={planStyles.cardTitle}>{card.title}</Text>
+        <TouchableOpacity onPress={() => onDismiss(card.id)} hitSlop={8}>
+          <Ionicons name="close" size={16} color={Colors.textMuted} />
+        </TouchableOpacity>
+      </View>
+      <Text style={planStyles.cardDescription}>{card.description}</Text>
+      <View style={planStyles.cardPills}>
+        <View style={planStyles.pill}>
+          <Text style={planStyles.pillText}>{card.day}</Text>
+        </View>
+        <View style={planStyles.pill}>
+          <Text style={planStyles.pillText}>{card.timeOfDay}</Text>
+        </View>
+        <View style={[planStyles.pill, planStyles.hdlhPill]}>
+          <Text style={planStyles.hdlhPillText}>{card.hdlhTag}</Text>
+        </View>
+        <TouchableOpacity
+          style={[planStyles.statusPill, card.status === 'done' && planStyles.statusPillDone, card.status === 'skipped' && planStyles.statusPillSkipped]}
+          onPress={() => onStatusCycle(card.id)}
+        >
+          <Text style={planStyles.statusPillText}>{STATUS_LABELS[card.status]}</Text>
+        </TouchableOpacity>
+      </View>
+      {!!card.rationale && (
+        <Text style={planStyles.cardRationale}>{card.rationale}</Text>
+      )}
+    </View>
+  );
+}
+
+// ── PlanTab ───────────────────────────────────────────────────────────────────
+
+type HdlhCounts = { Belonging: number; WellBeing: number; Engagement: number; Expression: number };
+const EMPTY_COUNTS: HdlhCounts = { Belonging: 0, WellBeing: 0, Engagement: 0, Expression: 0 };
+
+function PlanTab({ classroomId }: { classroomId: string }) {
+  const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
+
+  const [hdlhCounts, setHdlhCounts] = useState<HdlhCounts>(EMPTY_COUNTS);
+  const [snapshotLoading, setSnapshotLoading] = useState(true);
+  const [planCards, setPlanCards] = useState<PlanCard[]>([]);
+  const [planState, setPlanState] = useState<PlanGenerateState>('idle');
+
+  useEffect(() => {
+    if (!classroomId) return;
+    let cancelled = false;
+    setSnapshotLoading(true);
+    const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    supabase
+      .from('observations')
+      .select('id, hdlh_tags')
+      .eq('classroom_id', classroomId)
+      .gte('created_at', since)
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        const counts: HdlhCounts = { ...EMPTY_COUNTS };
+        for (const row of data) {
+          const tags: string[] = Array.isArray(row.hdlh_tags) ? row.hdlh_tags : [];
+          for (const tag of tags) {
+            const key = tag as keyof HdlhCounts;
+            if (key in counts) counts[key]++;
+          }
+        }
+        setHdlhCounts(counts);
+        setSnapshotLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [classroomId]);
+
+  const maxCount = useMemo(
+    () => Math.max(1, ...Object.values(hdlhCounts)),
+    [hdlhCounts],
+  );
+  const hasGap = Object.values(hdlhCounts).some((c) => c === 0);
+
+  const handleGeneratePlan = useCallback(async () => {
+    if (!parseUrl) return;
+    setPlanState('loading');
+    try {
+      const res = await fetch(`${parseUrl}/api/weekly-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          classroom_id: classroomId,
+          hdlh_snapshot: {
+            belonging: hdlhCounts.Belonging,
+            wellbeing: hdlhCounts.WellBeing,
+            engagement: hdlhCounts.Engagement,
+            expression: hdlhCounts.Expression,
+          },
+          window: '14d',
+        }),
+      });
+      if (!res.ok) throw new Error('Plan generation failed');
+      const json = await res.json();
+      const cards: PlanCard[] = (json.cards ?? []).map(
+        (c: Omit<PlanCard, 'status'> & { status?: PlanCardStatus }) => ({
+          ...c,
+          status: c.status ?? 'planned',
+        }),
+      );
+      setPlanCards(cards);
+      setPlanState('done');
+    } catch {
+      setPlanState('error');
+    }
+  }, [parseUrl, classroomId, hdlhCounts]);
+
+  const handleStatusCycle = useCallback((id: string) => {
+    setPlanCards((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: STATUS_NEXT[c.status] } : c)),
+    );
+  }, []);
+
+  const handleDismiss = useCallback((id: string) => {
+    setPlanCards((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  return (
+    <ScrollView style={planStyles.screen} contentContainerStyle={planStyles.screenContent}>
+      <Text style={mainTabStyles.screenTitle}>Plan</Text>
+
+      {/* HDLH Snapshot */}
+      <View style={planStyles.section}>
+        <Text style={planStyles.sectionTitle}>Classroom Snapshot · Last 14 Days</Text>
+        {snapshotLoading ? (
+          <ActivityIndicator color={Colors.primary} style={planStyles.loadingIndicator} />
+        ) : (
+          <>
+            {hasGap && (
+              <View style={planStyles.gapWarning}>
+                <Ionicons name="warning-outline" size={14} color="#F5A623" />
+                <Text style={planStyles.gapWarningText}>Some foundations have no observations yet</Text>
+              </View>
+            )}
+            <View style={planStyles.foundationGrid}>
+              {HDLH_FOUNDATIONS.map(({ key, label }) => {
+                const count = hdlhCounts[key as keyof HdlhCounts];
+                const fill = count / maxCount;
+                const active = count > 0;
+                return (
+                  <View key={key} style={[planStyles.foundationCard, active && planStyles.foundationCardActive]}>
+                    <Text style={planStyles.foundationCount}>{count}</Text>
+                    <Text style={planStyles.foundationLabel}>{label}</Text>
+                    <View style={planStyles.foundationBarBg}>
+                      <View
+                        style={[
+                          planStyles.foundationBarFill,
+                          {
+                            width: `${Math.round(fill * 100)}%` as unknown as number,
+                            backgroundColor: active ? Colors.primary : Colors.textDark,
+                          },
+                        ]}
+                      />
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          </>
+        )}
+      </View>
+
+      {/* Weekly Plan */}
+      <View style={planStyles.section}>
+        <View style={planStyles.sectionHeader}>
+          <Text style={planStyles.sectionTitle}>Weekly Plan</Text>
+          {planState !== 'loading' && (
+            <TouchableOpacity style={planStyles.generateBtn} onPress={handleGeneratePlan}>
+              <Ionicons name="sparkles-outline" size={15} color="#FFFFFF" />
+              <Text style={planStyles.generateBtnText}>Generate Plan</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        {planState === 'loading' && (
+          <View style={planStyles.loadingRow}>
+            <ActivityIndicator color={Colors.primary} />
+            <Text style={planStyles.loadingText}>Generating weekly plan…</Text>
+          </View>
+        )}
+        {planState === 'error' && (
+          <Text style={planStyles.errorText}>Failed to generate plan. Tap Generate Plan to retry.</Text>
+        )}
+        {planCards.map((card) => (
+          <PlanCardView
+            key={card.id}
+            card={card}
+            onStatusCycle={handleStatusCycle}
+            onDismiss={handleDismiss}
+          />
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
 export default function HomeScreen() {
   const {
     classroomId,
@@ -1748,13 +1982,7 @@ export default function HomeScreen() {
 
       {/* PLAN TAB */}
       {activeMainTab === 'plan' && (
-        <View style={mainTabStyles.screen}>
-          <Text style={mainTabStyles.screenTitle}>Plan</Text>
-          <View style={mainTabStyles.planPlaceholder}>
-            <Ionicons name="calendar-outline" size={48} color={Colors.textDark} />
-            <Text style={mainTabStyles.planPlaceholderText}>Weekly planning coming soon</Text>
-          </View>
-        </View>
+        <PlanTab classroomId={classroomId ?? ''} />
       )}
     </View>
   );
@@ -2400,17 +2628,6 @@ const mainTabStyles = StyleSheet.create({
   childCardWrapper: {
     flex: 1,
   },
-  planPlaceholder: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 16,
-  },
-  planPlaceholderText: {
-    fontSize: 16,
-    fontFamily: "Nunito_600SemiBold",
-    color: Colors.textMuted,
-  },
 });
 
 const profileStyles = StyleSheet.create({
@@ -2608,5 +2825,188 @@ const profileStyles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Nunito_600SemiBold',
     color: Colors.textMuted,
+  },
+});
+
+const planStyles = StyleSheet.create({
+  screen: {
+    flex: 1,
+  },
+  screenContent: {
+    paddingBottom: 40,
+  },
+  section: {
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    gap: 12,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionTitle: {
+    fontSize: 15,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  loadingIndicator: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+  },
+  gapWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(245, 166, 35, 0.12)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  gapWarningText: {
+    fontSize: 13,
+    fontFamily: 'Nunito_600SemiBold',
+    color: '#F5A623',
+  },
+  foundationGrid: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  foundationCard: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 14,
+    gap: 4,
+    opacity: 0.5,
+  },
+  foundationCardActive: {
+    opacity: 1,
+  },
+  foundationCount: {
+    fontSize: 24,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.text,
+  },
+  foundationLabel: {
+    fontSize: 12,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.textMuted,
+    marginBottom: 6,
+  },
+  foundationBarBg: {
+    height: 4,
+    backgroundColor: Colors.border,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  foundationBarFill: {
+    height: 4,
+    borderRadius: 2,
+  },
+  generateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  generateBtnText: {
+    fontSize: 13,
+    fontFamily: 'Nunito_700Bold',
+    color: '#FFFFFF',
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+  },
+  loadingText: {
+    fontSize: 14,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.textMuted,
+  },
+  errorText: {
+    fontSize: 14,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.error,
+    paddingVertical: 8,
+  },
+  card: {
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 16,
+    gap: 10,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  cardTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.text,
+  },
+  cardDescription: {
+    fontSize: 14,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.textMuted,
+    lineHeight: 20,
+  },
+  cardPills: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  pill: {
+    backgroundColor: Colors.surfaceLight,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  pillText: {
+    fontSize: 12,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.textMuted,
+  },
+  hdlhPill: {
+    backgroundColor: 'rgba(249, 123, 107, 0.18)',
+  },
+  hdlhPillText: {
+    fontSize: 12,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.primary,
+  },
+  statusPill: {
+    backgroundColor: Colors.surfaceLight,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  statusPillDone: {
+    backgroundColor: 'rgba(123, 196, 160, 0.2)',
+  },
+  statusPillSkipped: {
+    backgroundColor: Colors.border,
+  },
+  statusPillText: {
+    fontSize: 12,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.text,
+  },
+  cardRationale: {
+    fontSize: 12,
+    fontFamily: 'Nunito_400Regular',
+    color: Colors.textDark,
+    fontStyle: 'italic',
+    lineHeight: 18,
   },
 });
