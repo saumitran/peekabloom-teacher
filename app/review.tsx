@@ -61,7 +61,7 @@ function ObservationCard({
       <View style={styles.obsCard}>
         <View style={styles.obsHeader}>
           <View style={styles.obsChildRow}>
-            <Ionicons name="person-circle" size={24} color={Colors.accent} />
+            <Ionicons name="person-circle" size={24} color={Colors.success} />
             <Text style={styles.obsChildName}>{childName}</Text>
           </View>
           <Pressable
@@ -263,7 +263,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: Colors.accent,
+    backgroundColor: Colors.success,
     borderRadius: 16,
     paddingHorizontal: 16,
     paddingVertical: 10,
@@ -271,7 +271,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   approveAllBtnPressed: {
-    backgroundColor: Colors.accentDark,
+    backgroundColor: Colors.success,
     transform: [{ scale: 0.97 }],
   },
   approveAllBtnDisabled: {
@@ -301,7 +301,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   backToHomeBtnPressed: {
-    backgroundColor: Colors.surfaceLight,
+    backgroundColor: Colors.surfaceAlt,
     transform: [{ scale: 0.97 }],
   },
   backToHomeText: {

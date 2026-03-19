@@ -220,7 +220,7 @@ const styles = StyleSheet.create({
     minHeight: 58,
   },
   activateBtnPressed: {
-    backgroundColor: Colors.primaryDark,
+    backgroundColor: Colors.primary,
     transform: [{ scale: 0.98 }],
   },
   activateBtnDisabled: {

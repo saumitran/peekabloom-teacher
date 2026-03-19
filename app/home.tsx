@@ -655,7 +655,7 @@ function VoiceRecorder({
       : uiState === "parsing"
         ? Colors.textMuted
         : uiState === "saved"
-          ? Colors.accent
+          ? Colors.success
           : uiState === "error"
             ? Colors.error
             : Colors.primary;
@@ -942,7 +942,7 @@ function PhotoRecorder({
     const btnColor = isRecording
       ? "#D96A5C"
       : photoState === "saved"
-        ? Colors.accent
+        ? Colors.success
         : photoState === "error"
           ? Colors.error
           : Colors.primary;
@@ -985,7 +985,7 @@ function PhotoRecorder({
     <>
       <View style={styles.recordArea}>
         <TouchableOpacity
-          style={[styles.recordBtn, { backgroundColor: Colors.accent }]}
+          style={[styles.recordBtn, { backgroundColor: Colors.success }]}
           activeOpacity={0.8}
           onPress={openCamera}
           disabled={showModal}
@@ -2000,7 +2000,7 @@ const styles = StyleSheet.create({
   // LEFT PANEL
   leftPanel: {
     width: 220,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceAlt,
     borderRightWidth: 1,
     borderRightColor: Colors.background,
     paddingTop: 16,
@@ -2023,7 +2023,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: Colors.accent,
+    backgroundColor: Colors.success,
     flexShrink: 0,
   },
   classroomName: {
@@ -2158,7 +2158,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   tabActive: {
-    backgroundColor: Colors.surfaceLight,
+    backgroundColor: Colors.surfaceAlt,
   },
   tabText: {
     fontSize: 14,
@@ -2331,9 +2331,15 @@ const feedStyles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   cardPending: {
-    opacity: 0.6,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary,
   },
   cardHeader: {
     flexDirection: "row",
@@ -2367,7 +2373,7 @@ const feedStyles = StyleSheet.create({
     gap: 6,
   },
   tag: {
-    backgroundColor: "#7BC4A0",
+    backgroundColor: Colors.tagBg,
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 3,
@@ -2375,7 +2381,7 @@ const feedStyles = StyleSheet.create({
   tagText: {
     fontSize: 11,
     fontFamily: "Nunito_600SemiBold",
-    color: "#FFFFFF",
+    color: Colors.tagText,
   },
   actions: {
     flexDirection: "row",
@@ -2388,7 +2394,7 @@ const feedStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
-    backgroundColor: "#7BC4A0",
+    backgroundColor: Colors.primary,
     borderRadius: 8,
     paddingVertical: 7,
   },
@@ -2566,7 +2572,7 @@ const cameraStyles = StyleSheet.create({
     flex: 1,
     paddingVertical: 16,
     borderRadius: 16,
-    backgroundColor: Colors.accent,
+    backgroundColor: Colors.success,
     alignItems: "center",
   },
   usePhotoBtnText: {
@@ -2580,9 +2586,13 @@ const mainTabStyles = StyleSheet.create({
   tabBar: {
     flexDirection: "row",
     backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    borderTopWidth: 0,
     paddingHorizontal: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 4,
   },
   tab: {
     flex: 1,
@@ -2804,7 +2814,7 @@ const profileStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: Colors.accent,
+    backgroundColor: Colors.success,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
@@ -2860,7 +2870,7 @@ const planStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(245, 166, 35, 0.12)',
+    backgroundColor: Colors.warningLight,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -2876,13 +2886,14 @@ const planStyles = StyleSheet.create({
   },
   foundationCard: {
     flex: 1,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceAlt,
     borderRadius: 12,
     padding: 14,
     gap: 4,
     opacity: 0.5,
   },
   foundationCardActive: {
+    backgroundColor: Colors.primaryLight,
     opacity: 1,
   },
   foundationCount: {
@@ -2967,7 +2978,7 @@ const planStyles = StyleSheet.create({
     gap: 6,
   },
   pill: {
-    backgroundColor: Colors.surfaceLight,
+    backgroundColor: Colors.surfaceAlt,
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -2978,7 +2989,7 @@ const planStyles = StyleSheet.create({
     color: Colors.textMuted,
   },
   hdlhPill: {
-    backgroundColor: 'rgba(249, 123, 107, 0.18)',
+    backgroundColor: Colors.primaryLight,
   },
   hdlhPillText: {
     fontSize: 12,
@@ -2986,13 +2997,13 @@ const planStyles = StyleSheet.create({
     color: Colors.primary,
   },
   statusPill: {
-    backgroundColor: Colors.surfaceLight,
+    backgroundColor: Colors.surfaceAlt,
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   statusPillDone: {
-    backgroundColor: 'rgba(123, 196, 160, 0.2)',
+    backgroundColor: Colors.successLight,
   },
   statusPillSkipped: {
     backgroundColor: Colors.border,
