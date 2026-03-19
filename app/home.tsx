@@ -163,24 +163,6 @@ function toHHMM(iso: string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-function toTimeStr(iso: string): string {
-  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-}
-
-function buildChildTimeLabel(childId: string, events: AttendanceEvent[], napping: boolean): string {
-  const childEvents = events.filter(e => e.child_id === childId);
-  if (childEvents.length === 0) return '';
-  const sorted = [...childEvents].sort((a, b) => a.recorded_at < b.recorded_at ? -1 : 1);
-  const firstCheckin = sorted.find(e => e.event_type === 'checkin');
-  const lastCheckout = [...sorted].reverse().find(e => e.event_type === 'checkout');
-  const firstNapStart = sorted.find(e => e.event_type === 'nap_start');
-  const parts: string[] = [];
-  if (firstCheckin) parts.push(`In ${toTimeStr(firstCheckin.recorded_at)}`);
-  if (lastCheckout) parts.push(`Out ${toTimeStr(lastCheckout.recorded_at)}`);
-  if (napping && firstNapStart) parts.push(`Nap ${toTimeStr(firstNapStart.recorded_at)}`);
-  return parts.join(' · ');
-}
-
 function formatTimestamp(created_at: string): string {
   const date = new Date(created_at);
   const now = new Date();
@@ -242,7 +224,6 @@ function AttendanceChildCard({
   napping,
   onTap,
   onLongPress,
-  timeLabel,
 }: {
   child: Child;
   index: number;
@@ -251,7 +232,6 @@ function AttendanceChildCard({
   napping: boolean;
   onTap: () => void;
   onLongPress: () => void;
-  timeLabel?: string;
 }) {
   const initials = getInitials(child.name);
 
@@ -298,9 +278,6 @@ function AttendanceChildCard({
         <Text style={[styles.childName, { color: textColor }]} numberOfLines={1}>
           {child.name}
         </Text>
-        {timeLabel ? (
-          <Text style={attendanceStyles.timeLabel} numberOfLines={1}>{timeLabel}</Text>
-        ) : null}
       </TouchableOpacity>
     </Animated.View>
   );
@@ -1476,10 +1453,9 @@ export default function HomeScreen() {
         napping={status.napping}
         onTap={() => handleChildTap(item)}
         onLongPress={() => setEditingChild(item)}
-        timeLabel={buildChildTimeLabel(item.id, todayEvents, status.napping)}
       />
     );
-  }, [leftTab, attendanceStatusMap, todayEvents, handleChildTap]);
+  }, [leftTab, attendanceStatusMap, handleChildTap]);
 
   const renderFeedItem = useCallback(
     ({ item }: { item: FeedItem }) => {
@@ -1615,6 +1591,40 @@ export default function HomeScreen() {
                   columnWrapperStyle={styles.gridRow}
                   contentContainerStyle={styles.gridContent}
                   showsVerticalScrollIndicator={false}
+                  ListFooterComponent={
+                    <View style={statusTableStyles.container}>
+                      <Text style={statusTableStyles.sectionHeader}>Today's Status</Text>
+                      {children.map(child => {
+                        const status = attendanceStatusMap.get(child.id) ?? { checkedIn: false, napping: false };
+                        const hasEvents = todayEvents.some(e => e.child_id === child.id);
+                        const isAbsent = !status.checkedIn && !hasEvents;
+                        const isCheckedOut = !status.checkedIn && hasEvents;
+                        const firstName = child.name.split(' ')[0];
+                        return (
+                          <View
+                            key={child.id}
+                            style={[
+                              statusTableStyles.row,
+                              status.checkedIn && statusTableStyles.rowPresent,
+                              isAbsent && statusTableStyles.rowAbsent,
+                            ]}
+                          >
+                            <Text style={statusTableStyles.name} numberOfLines={1}>{firstName}</Text>
+                            <View style={[
+                              statusTableStyles.dot,
+                              { backgroundColor: status.checkedIn ? Colors.accent : isCheckedOut ? Colors.textDark : 'transparent' },
+                            ]} />
+                            <Text style={[statusTableStyles.statusLabel, isAbsent && statusTableStyles.absentText]}>
+                              {status.checkedIn ? 'Present' : isCheckedOut ? 'Out' : 'Absent'}
+                            </Text>
+                            {status.napping
+                              ? <Ionicons name="moon" size={11} color="#F5A623" />
+                              : <View style={{ width: 11 }} />}
+                          </View>
+                        );
+                      })}
+                    </View>
+                  }
                 />
               )}
             </View>
@@ -2085,12 +2095,6 @@ const attendanceStyles = StyleSheet.create({
     top: 4,
     right: 4,
     zIndex: 1,
-  },
-  timeLabel: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    marginTop: 2,
   },
   eventRow: {
     flexDirection: 'row',
@@ -2641,3 +2645,55 @@ const profileStyles = StyleSheet.create({
   },
 });
 
+const statusTableStyles = StyleSheet.create({
+  container: {
+    marginTop: 12,
+    marginHorizontal: 8,
+    marginBottom: 16,
+  },
+  sectionHeader: {
+    fontSize: 10,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 6,
+    paddingLeft: 6,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 6,
+    borderLeftWidth: 2,
+    borderLeftColor: 'transparent',
+    borderRadius: 4,
+    gap: 6,
+  },
+  rowPresent: {
+    borderLeftColor: Colors.accent,
+    backgroundColor: 'rgba(123,196,160,0.06)',
+  },
+  rowAbsent: {
+    opacity: 0.45,
+  },
+  name: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.text,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  statusLabel: {
+    fontSize: 11,
+    color: Colors.textMuted,
+    width: 46,
+  },
+  absentText: {
+    color: Colors.textDark,
+  },
+});
