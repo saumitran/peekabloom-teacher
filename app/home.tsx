@@ -5,6 +5,7 @@ import {
   View,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   ActivityIndicator,
   Platform,
   Modal,
@@ -51,6 +52,14 @@ type FeedItem =
 
 type LeftTab = 'attendance' | 'nap';
 type MainTab = 'today' | 'children' | 'plan';
+type ProfileWindow = '7d' | '28d';
+
+const HDLH_FOUNDATIONS: { key: string; label: string }[] = [
+  { key: 'Belonging', label: 'Belonging' },
+  { key: 'WellBeing', label: 'Well-Being' },
+  { key: 'Engagement', label: 'Engagement' },
+  { key: 'Expression', label: 'Expression' },
+];
 
 const QUEUE_STORAGE_KEY = 'peekabloom_queue';
 
@@ -1008,6 +1017,210 @@ function PhotoRecorder({
   );
 }
 
+function ProfileObsRow({ obs }: { obs: Observation }) {
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!obs.photo_url) return;
+    if (obs.photo_url.startsWith('http')) { setPhotoUri(obs.photo_url); return; }
+    supabase.storage.from('photos').createSignedUrl(obs.photo_url, 3600)
+      .then(({ data }) => { if (data?.signedUrl) setPhotoUri(data.signedUrl); });
+  }, [obs.photo_url]);
+
+  return (
+    <View style={profileStyles.obsRow}>
+      <View style={profileStyles.obsRowText}>
+        <Text style={profileStyles.obsContent}>{obs.parsed_content}</Text>
+        <Text style={profileStyles.obsDate}>{formatTimestamp(obs.created_at)}</Text>
+      </View>
+      {photoUri ? (
+        <Image source={{ uri: photoUri }} style={profileStyles.obsThumb} resizeMode="cover" />
+      ) : null}
+    </View>
+  );
+}
+
+function ChildProfileModal({ child, classroomId, onClose }: {
+  child: Child | null;
+  classroomId: string;
+  onClose: () => void;
+}) {
+  const [profileWindow, setProfileWindow] = useState<ProfileWindow>('28d');
+  const [observations, setObservations] = useState<Observation[]>([]);
+  const [obsLoading, setObsLoading] = useState(false);
+  const [snapshotState, setSnapshotState] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [snapshotText, setSnapshotText] = useState('');
+
+  useEffect(() => {
+    if (!child) return;
+    setObsLoading(true);
+    const days = profileWindow === '7d' ? 7 : 28;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    supabase
+      .from('observations')
+      .select('id, child_id, classroom_id, parsed_content, hdlh_tags, elect_tags, photo_url, status, created_at, record_type, needs_director_review, structured_fields')
+      .eq('child_id', child.id)
+      .gte('created_at', since.toISOString())
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        setObservations((data as Observation[]) ?? []);
+        setObsLoading(false);
+      });
+  }, [child?.id, profileWindow]);
+
+  useEffect(() => {
+    setSnapshotState('idle');
+    setSnapshotText('');
+  }, [child?.id]);
+
+  const handleGenerateSnapshot = async () => {
+    if (!child) return;
+    const parseUrl = process.env.EXPO_PUBLIC_PARSING_API_URL;
+    const parseKey = process.env.EXPO_PUBLIC_PARSING_API_KEY;
+    setSnapshotState('loading');
+    try {
+      const res = await fetch(`${parseUrl}/daily-summary`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${parseKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ child_id: child.id, classroom_id: classroomId, window: profileWindow }),
+      });
+      if (!res.ok) throw new Error('API error');
+      const data = await res.json();
+      setSnapshotText(data.summary ?? '');
+      setSnapshotState('done');
+    } catch {
+      setSnapshotState('idle');
+    }
+  };
+
+  const handleCertify = async () => {
+    if (!child) return;
+    const { data: authData } = await supabase.auth.getUser();
+    await supabase.from('child_profile_snapshots').insert({
+      child_id: child.id,
+      classroom_id: classroomId,
+      time_window: profileWindow,
+      summary: snapshotText,
+      certified_by: authData.user?.id ?? null,
+      certified_at: new Date().toISOString(),
+    });
+    setSnapshotState('idle');
+    setSnapshotText('');
+  };
+
+  if (!child) return null;
+
+  const bgColors = ["#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B", "#B87BF9", "#F96BA3", "#6BF9C7", "#F9A36B"];
+  let hash = 0;
+  for (let i = 0; i < child.id.length; i++) hash = (hash + child.id.charCodeAt(i)) % bgColors.length;
+  const avatarBg = bgColors[hash];
+  const initials = getInitials(child.name);
+
+  const generalObs = observations.filter(o => !Array.isArray(o.hdlh_tags) || o.hdlh_tags.length === 0);
+  const sections = [
+    ...HDLH_FOUNDATIONS.map(f => ({
+      key: f.key,
+      label: f.label,
+      obs: observations.filter(o => Array.isArray(o.hdlh_tags) && o.hdlh_tags.includes(f.key)),
+    })),
+    { key: 'General', label: 'General', obs: generalObs },
+  ];
+
+  return (
+    <Modal visible animationType="fade" transparent>
+      <View style={profileStyles.overlay}>
+        <View style={profileStyles.sheet}>
+          {/* Header */}
+          <View style={profileStyles.header}>
+            <View style={[profileStyles.headerAvatar, { backgroundColor: avatarBg }]}>
+              <Text style={profileStyles.headerInitials}>{initials}</Text>
+            </View>
+            <Text style={profileStyles.headerName}>{child.name}</Text>
+            <TouchableOpacity style={profileStyles.closeBtn} onPress={onClose}>
+              <Ionicons name="close" size={24} color={Colors.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Time window selector */}
+          <View style={profileStyles.windowRow}>
+            {(['7d', '28d'] as ProfileWindow[]).map(w => (
+              <TouchableOpacity
+                key={w}
+                style={[profileStyles.windowBtn, profileWindow === w && profileStyles.windowBtnActive]}
+                onPress={() => setProfileWindow(w)}
+              >
+                <Text style={[profileStyles.windowBtnText, profileWindow === w && profileStyles.windowBtnTextActive]}>
+                  {w === '7d' ? '7 days' : '28 days'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Body */}
+          {obsLoading ? (
+            <View style={profileStyles.loadingBox}>
+              <ActivityIndicator color={Colors.primary} />
+            </View>
+          ) : (
+            <ScrollView
+              style={profileStyles.body}
+              contentContainerStyle={profileStyles.bodyContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* HDLH + General sections */}
+              {sections.map(section => (
+                <View key={section.key} style={profileStyles.section}>
+                  <Text style={profileStyles.sectionTitle}>{section.label}</Text>
+                  {section.obs.length === 0 ? (
+                    <Text style={profileStyles.sectionEmpty}>No observations yet</Text>
+                  ) : (
+                    section.obs.map(obs => <ProfileObsRow key={obs.id} obs={obs} />)
+                  )}
+                </View>
+              ))}
+
+              {/* Portfolio snapshot */}
+              <View style={profileStyles.snapshotSection}>
+                <Text style={profileStyles.sectionTitle}>Portfolio Snapshot</Text>
+                {snapshotState === 'idle' && (
+                  <TouchableOpacity style={profileStyles.generateBtn} onPress={handleGenerateSnapshot}>
+                    <Ionicons name="sparkles-outline" size={16} color="#FFFFFF" />
+                    <Text style={profileStyles.generateBtnText}>Generate Snapshot</Text>
+                  </TouchableOpacity>
+                )}
+                {snapshotState === 'loading' && (
+                  <View style={profileStyles.snapshotLoading}>
+                    <ActivityIndicator color={Colors.primary} size="small" />
+                    <Text style={profileStyles.snapshotLoadingText}>Generating...</Text>
+                  </View>
+                )}
+                {snapshotState === 'done' && (
+                  <View style={profileStyles.snapshotCard}>
+                    <Text style={profileStyles.snapshotText}>{snapshotText}</Text>
+                    <View style={profileStyles.snapshotActions}>
+                      <TouchableOpacity style={profileStyles.certifyBtn} onPress={handleCertify}>
+                        <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
+                        <Text style={profileStyles.certifyBtnText}>Certify</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={profileStyles.dismissBtn}
+                        onPress={() => { setSnapshotState('idle'); setSnapshotText(''); }}
+                      >
+                        <Text style={profileStyles.dismissBtnText}>Dismiss</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function HomeScreen() {
   const {
     classroomId,
@@ -1022,6 +1235,7 @@ export default function HomeScreen() {
   const [isOnline, setIsOnline] = useState(true);
   const [loading, setLoading] = useState(true);
   const [activeMainTab, setActiveMainTab] = useState<MainTab>('today');
+  const [selectedChild, setSelectedChild] = useState<Child | null>(null);
   const [activeTab, setActiveTab] = useState<RecordingTab>("voice");
   const [leftTab, setLeftTab] = useState<LeftTab>('attendance');
   const [todayEvents, setTodayEvents] = useState<AttendanceEvent[]>([]);
@@ -1522,7 +1736,7 @@ export default function HomeScreen() {
                 <TouchableOpacity
                   style={mainTabStyles.childCardWrapper}
                   activeOpacity={0.75}
-                  onPress={() => console.log(item.id)}
+                  onPress={() => setSelectedChild(item)}
                 >
                   <ChildCard child={item} index={index} />
                 </TouchableOpacity>
@@ -1534,6 +1748,11 @@ export default function HomeScreen() {
               showsVerticalScrollIndicator={false}
             />
           )}
+          <ChildProfileModal
+            child={selectedChild}
+            classroomId={classroomId ?? ''}
+            onClose={() => setSelectedChild(null)}
+          />
         </View>
       )}
 
@@ -2200,6 +2419,204 @@ const mainTabStyles = StyleSheet.create({
   planPlaceholderText: {
     fontSize: 16,
     fontFamily: "Nunito_600SemiBold",
+    color: Colors.textMuted,
+  },
+});
+
+const profileStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'center',
+  },
+  sheet: {
+    width: '72%',
+    backgroundColor: Colors.background,
+    marginVertical: 32,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  headerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerInitials: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+  headerName: {
+    flex: 1,
+    fontSize: 18,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.text,
+  },
+  closeBtn: {
+    padding: 4,
+  },
+  windowRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  windowBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  windowBtnActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  windowBtnText: {
+    fontSize: 13,
+    fontFamily: 'Nunito_600SemiBold',
+    color: Colors.textMuted,
+  },
+  windowBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  loadingBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  body: {
+    flex: 1,
+  },
+  bodyContent: {
+    padding: 20,
+    gap: 24,
+  },
+  section: {
+    gap: 8,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontFamily: 'Nunito_700Bold',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  sectionEmpty: {
+    fontSize: 13,
+    color: Colors.textDark,
+    fontStyle: 'italic',
+    paddingLeft: 4,
+  },
+  obsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    padding: 10,
+  },
+  obsRowText: {
+    flex: 1,
+    gap: 4,
+  },
+  obsContent: {
+    fontSize: 13,
+    color: Colors.text,
+    lineHeight: 18,
+  },
+  obsDate: {
+    fontSize: 11,
+    color: Colors.textMuted,
+  },
+  obsThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 6,
+  },
+  snapshotSection: {
+    gap: 12,
+  },
+  generateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
+  generateBtnText: {
+    fontSize: 14,
+    fontFamily: 'Nunito_700Bold',
+    color: '#FFFFFF',
+  },
+  snapshotLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+  },
+  snapshotLoadingText: {
+    fontSize: 14,
+    color: Colors.textMuted,
+  },
+  snapshotCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+  },
+  snapshotText: {
+    fontSize: 14,
+    color: Colors.text,
+    lineHeight: 21,
+  },
+  snapshotActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  certifyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Colors.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  certifyBtnText: {
+    fontSize: 13,
+    fontFamily: 'Nunito_700Bold',
+    color: '#FFFFFF',
+  },
+  dismissBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  dismissBtnText: {
+    fontSize: 13,
+    fontFamily: 'Nunito_600SemiBold',
     color: Colors.textMuted,
   },
 });
