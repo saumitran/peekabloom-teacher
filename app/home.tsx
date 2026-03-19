@@ -99,7 +99,9 @@ async function loadQueueFromStorage(): Promise<QueueItem[]> {
     const raw = await AsyncStorage.getItem(QUEUE_STORAGE_KEY);
     if (!raw) return [];
     const items: QueueItem[] = JSON.parse(raw);
-    return items.map(q => q.status === 'processing' ? { ...q, status: 'queued' as const } : q);
+    return items
+      .filter(q => q.status !== 'failed')
+      .map(q => q.status === 'processing' ? { ...q, status: 'queued' as const } : q);
   } catch (e) {
     console.error('[Peekabloom] Failed to load queue:', e);
     return [];
@@ -491,10 +493,12 @@ function ObservationCard({
 function PlaceholderCard({
   item,
   onRetry,
+  onDismiss,
   isOnline,
 }: {
   item: QueueItem;
   onRetry: () => void;
+  onDismiss: () => void;
   isOnline: boolean;
 }) {
   const pulse = useRef(new RNAnimated.Value(1)).current;
@@ -534,9 +538,14 @@ function PlaceholderCard({
         ) : (
           <ActivityIndicator size="small" color="#E07A6B" />
         )}
-        <Text style={[placeholderStyles.label, isFailed && placeholderStyles.labelFailed]}>
+        <Text style={[placeholderStyles.label, isFailed && placeholderStyles.labelFailed, { flex: 1 }]}>
           {isFailed ? "Failed to save" : !isOnline && item.status === "queued" ? "Waiting for connection" : "Processing..."}
         </Text>
+        {isFailed ? (
+          <TouchableOpacity onPress={onDismiss} hitSlop={8}>
+            <Ionicons name="close" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+        ) : null}
       </View>
       {!isFailed && elapsed > 5000 ? (
         <Text style={placeholderStyles.subText}>
@@ -1702,6 +1711,9 @@ export default function HomeScreen() {
               setQueue((prev) =>
                 prev.map((q) => (q.id === item.id ? { ...q, status: "queued" as const } : q))
               )
+            }
+            onDismiss={() =>
+              setQueue((prev) => prev.filter((q) => q.id !== item.id))
             }
           />
         );
