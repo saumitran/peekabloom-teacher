@@ -1591,40 +1591,6 @@ export default function HomeScreen() {
                   columnWrapperStyle={styles.gridRow}
                   contentContainerStyle={styles.gridContent}
                   showsVerticalScrollIndicator={false}
-                  ListFooterComponent={
-                    <View style={statusTableStyles.container}>
-                      <Text style={statusTableStyles.sectionHeader}>Today's Status</Text>
-                      {children.map(child => {
-                        const status = attendanceStatusMap.get(child.id) ?? { checkedIn: false, napping: false };
-                        const hasEvents = todayEvents.some(e => e.child_id === child.id);
-                        const isAbsent = !status.checkedIn && !hasEvents;
-                        const isCheckedOut = !status.checkedIn && hasEvents;
-                        const firstName = child.name.split(' ')[0];
-                        return (
-                          <View
-                            key={child.id}
-                            style={[
-                              statusTableStyles.row,
-                              status.checkedIn && statusTableStyles.rowPresent,
-                              isAbsent && statusTableStyles.rowAbsent,
-                            ]}
-                          >
-                            <Text style={statusTableStyles.name} numberOfLines={1}>{firstName}</Text>
-                            <View style={[
-                              statusTableStyles.dot,
-                              { backgroundColor: status.checkedIn ? Colors.accent : isCheckedOut ? Colors.textDark : 'transparent' },
-                            ]} />
-                            <Text style={[statusTableStyles.statusLabel, isAbsent && statusTableStyles.absentText]}>
-                              {status.checkedIn ? 'Present' : isCheckedOut ? 'Out' : 'Absent'}
-                            </Text>
-                            {status.napping
-                              ? <Ionicons name="moon" size={11} color="#F5A623" />
-                              : <View style={{ width: 11 }} />}
-                          </View>
-                        );
-                      })}
-                    </View>
-                  }
                 />
               )}
             </View>
@@ -2642,58 +2608,5 @@ const profileStyles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Nunito_600SemiBold',
     color: Colors.textMuted,
-  },
-});
-
-const statusTableStyles = StyleSheet.create({
-  container: {
-    marginTop: 12,
-    marginHorizontal: 8,
-    marginBottom: 16,
-  },
-  sectionHeader: {
-    fontSize: 10,
-    fontFamily: 'Nunito_700Bold',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginBottom: 6,
-    paddingLeft: 6,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 5,
-    paddingHorizontal: 6,
-    borderLeftWidth: 2,
-    borderLeftColor: 'transparent',
-    borderRadius: 4,
-    gap: 6,
-  },
-  rowPresent: {
-    borderLeftColor: Colors.accent,
-    backgroundColor: 'rgba(123,196,160,0.06)',
-  },
-  rowAbsent: {
-    opacity: 0.45,
-  },
-  name: {
-    flex: 1,
-    fontSize: 12,
-    fontFamily: 'Nunito_600SemiBold',
-    color: Colors.text,
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  statusLabel: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    width: 46,
-  },
-  absentText: {
-    color: Colors.textDark,
   },
 });
