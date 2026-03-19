@@ -53,6 +53,12 @@ type FeedItem =
 type LeftTab = 'attendance' | 'nap';
 type MainTab = 'today' | 'children' | 'plan';
 type ProfileWindow = '7d' | '28d';
+type SnapshotState = 'idle' | 'loading' | 'done';
+
+const CHILD_BG_COLORS = [
+  "#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B",
+  "#B87BF9", "#F96BA3", "#6BF9C7", "#F9A36B",
+];
 
 const HDLH_FOUNDATIONS: { key: string; label: string }[] = [
   { key: 'Belonging', label: 'Belonging' },
@@ -172,13 +178,20 @@ function formatTimestamp(created_at: string): string {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function ChildCard({ child, index }: { child: Child; index: number }) {
+function usePhotoUri(photoUrl: string | null): string | null {
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  useEffect(() => {
+    if (!photoUrl) { setPhotoUri(null); return; }
+    if (photoUrl.startsWith('http')) { setPhotoUri(photoUrl); return; }
+    supabase.storage.from('photos').createSignedUrl(photoUrl, 3600)
+      .then(({ data }) => { if (data?.signedUrl) setPhotoUri(data.signedUrl); });
+  }, [photoUrl]);
+  return photoUri;
+}
+
+function ChildCard({ child, index, onPress }: { child: Child; index: number; onPress?: () => void }) {
   const initials = getInitials(child.name);
-  const bgColors = [
-    "#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B",
-    "#B87BF9", "#F96BA3", "#6BF9C7", "#F9A36B",
-  ];
-  const bg = bgColors[index % bgColors.length];
+  const bg = CHILD_BG_COLORS[index % CHILD_BG_COLORS.length];
 
   return (
     <Animated.View entering={FadeInDown.duration(400).delay(index * 50)}>
@@ -189,6 +202,7 @@ function ChildCard({ child, index }: { child: Child; index: number }) {
           if (Platform.OS !== "web") {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
+          onPress?.();
         }}
       >
         <View style={[styles.childAvatar, { backgroundColor: bg }]}>
@@ -358,21 +372,7 @@ function ObservationCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!obs.photo_url) return;
-    if (obs.photo_url.startsWith("http")) {
-      setPhotoUri(obs.photo_url);
-    } else {
-      supabase.storage
-        .from("photos")
-        .createSignedUrl(obs.photo_url, 3600)
-        .then(({ data }) => {
-          if (data?.signedUrl) setPhotoUri(data.signedUrl);
-        });
-    }
-  }, [obs.photo_url]);
+  const photoUri = usePhotoUri(obs.photo_url);
 
   const isPending = obs.status === "pending";
   const hdlhTags = Array.isArray(obs.hdlh_tags) ? obs.hdlh_tags : [];
@@ -1018,14 +1018,7 @@ function PhotoRecorder({
 }
 
 function ProfileObsRow({ obs }: { obs: Observation }) {
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!obs.photo_url) return;
-    if (obs.photo_url.startsWith('http')) { setPhotoUri(obs.photo_url); return; }
-    supabase.storage.from('photos').createSignedUrl(obs.photo_url, 3600)
-      .then(({ data }) => { if (data?.signedUrl) setPhotoUri(data.signedUrl); });
-  }, [obs.photo_url]);
+  const photoUri = usePhotoUri(obs.photo_url);
 
   return (
     <View style={profileStyles.obsRow}>
@@ -1048,31 +1041,31 @@ function ChildProfileModal({ child, classroomId, onClose }: {
   const [profileWindow, setProfileWindow] = useState<ProfileWindow>('28d');
   const [observations, setObservations] = useState<Observation[]>([]);
   const [obsLoading, setObsLoading] = useState(false);
-  const [snapshotState, setSnapshotState] = useState<'idle' | 'loading' | 'done'>('idle');
+  const [snapshotState, setSnapshotState] = useState<SnapshotState>('idle');
   const [snapshotText, setSnapshotText] = useState('');
 
   useEffect(() => {
     if (!child) return;
+    let cancelled = false;
     setObsLoading(true);
+    setSnapshotState('idle');
+    setSnapshotText('');
     const days = profileWindow === '7d' ? 7 : 28;
     const since = new Date();
     since.setDate(since.getDate() - days);
     supabase
       .from('observations')
-      .select('id, child_id, classroom_id, parsed_content, hdlh_tags, elect_tags, photo_url, status, created_at, record_type, needs_director_review, structured_fields')
+      .select('id, child_id, parsed_content, hdlh_tags, photo_url, created_at')
       .eq('child_id', child.id)
       .gte('created_at', since.toISOString())
       .order('created_at', { ascending: false })
       .then(({ data }) => {
+        if (cancelled) return;
         setObservations((data as Observation[]) ?? []);
         setObsLoading(false);
       });
+    return () => { cancelled = true; };
   }, [child?.id, profileWindow]);
-
-  useEffect(() => {
-    setSnapshotState('idle');
-    setSnapshotText('');
-  }, [child?.id]);
 
   const handleGenerateSnapshot = async () => {
     if (!child) return;
@@ -1109,23 +1102,26 @@ function ChildProfileModal({ child, classroomId, onClose }: {
     setSnapshotText('');
   };
 
+  const { avatarBg, initials } = useMemo(() => {
+    if (!child) return { avatarBg: CHILD_BG_COLORS[0], initials: '?' };
+    let hash = 0;
+    for (let i = 0; i < child.id.length; i++) hash = (hash + child.id.charCodeAt(i)) % CHILD_BG_COLORS.length;
+    return { avatarBg: CHILD_BG_COLORS[hash], initials: getInitials(child.name) };
+  }, [child?.id, child?.name]);
+
+  const sections = useMemo(() => {
+    const generalObs = observations.filter(o => !Array.isArray(o.hdlh_tags) || o.hdlh_tags.length === 0);
+    return [
+      ...HDLH_FOUNDATIONS.map(f => ({
+        key: f.key,
+        label: f.label,
+        obs: observations.filter(o => Array.isArray(o.hdlh_tags) && o.hdlh_tags.includes(f.key)),
+      })),
+      { key: 'General', label: 'General', obs: generalObs },
+    ];
+  }, [observations]);
+
   if (!child) return null;
-
-  const bgColors = ["#F97B6B", "#7BC4A0", "#6BA3F9", "#F9C76B", "#B87BF9", "#F96BA3", "#6BF9C7", "#F9A36B"];
-  let hash = 0;
-  for (let i = 0; i < child.id.length; i++) hash = (hash + child.id.charCodeAt(i)) % bgColors.length;
-  const avatarBg = bgColors[hash];
-  const initials = getInitials(child.name);
-
-  const generalObs = observations.filter(o => !Array.isArray(o.hdlh_tags) || o.hdlh_tags.length === 0);
-  const sections = [
-    ...HDLH_FOUNDATIONS.map(f => ({
-      key: f.key,
-      label: f.label,
-      obs: observations.filter(o => Array.isArray(o.hdlh_tags) && o.hdlh_tags.includes(f.key)),
-    })),
-    { key: 'General', label: 'General', obs: generalObs },
-  ];
 
   return (
     <Modal visible animationType="fade" transparent>
@@ -1733,13 +1729,7 @@ export default function HomeScreen() {
             <FlatList
               data={children}
               renderItem={({ item, index }) => (
-                <TouchableOpacity
-                  style={mainTabStyles.childCardWrapper}
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedChild(item)}
-                >
-                  <ChildCard child={item} index={index} />
-                </TouchableOpacity>
+                <ChildCard child={item} index={index} onPress={() => setSelectedChild(item)} />
               )}
               keyExtractor={(item) => item.id}
               numColumns={2}
